@@ -1,57 +1,57 @@
 version: 2
 updates:
-  # 1. Main Library Dependencies
-  - package-ecosystem: "gomod"
-    directory: "/"
-    schedule:
-      interval: "weekly"
-      day: "sunday"
-      time: "04:00"
-      timezone: "UTC"
-    open-pull-requests-limit: 10
-    commit-message:
-      prefix: "chore(deps)"
-      include: "scope"
-    groups:
-      gotd-ecosystem:
-        patterns:
-          - "github.com/gotd/*"
-      opentelemetry:
-        patterns:
-          - "go.opentelemetry.io/*"
-      golang-x:
-        patterns:
-          - "golang.org/x/*"
-      storage-backends:
-        patterns:
-          - "github.com/redis/go-redis/*"
-          - "go.etcd.io/bbolt*"
-      testing-tools:
-        patterns:
-          - "github.com/stretchr/testify*"
-
-  # 2. Developer Tools Ecosystem (_tools)
-  - package-ecosystem: "gomod"
-    directory: "/_tools"
-    schedule:
-      interval: "weekly"
-      day: "sunday"
-      time: "04:30"
-      timezone: "UTC"
-    open-pull-requests-limit: 5
-    commit-message:
-      prefix: "chore(tools)"
-      include: "scope"
-
-  # 3. GitHub Actions CI/CD Workflows
+  # Maintain GitHub Actions dependencies
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
-      day: "sunday"
-      time: "05:00"
+      day: "monday"
+      time: "03:00"
       timezone: "UTC"
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: "ci"
+      include: "scope"
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+
+  # Maintain Go module dependencies
+  - package-ecosystem: "gomod"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "03:30"
+      timezone: "UTC"
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: "deps"
+      include: "scope"
+    groups:
+      go-dependencies:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+
+  # Maintain Docker container dependencies
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "04:00"
+      timezone: "UTC"
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 5
     commit-message:
-      prefix: "ci(actions)"
+      prefix: "docker"
       include: "scope"

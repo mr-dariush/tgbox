@@ -14,20 +14,22 @@ concurrency:
 
 jobs:
   check-release-notes:
-    name: Validate Release Notes Block
+    name: Validate Release Notes
     runs-on: ubuntu-latest
-    if: github.event.pull_request.user.login != 'dependabot[bot]'
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
-      - name: Verify release-notes block format
+      - name: Validate Release Notes Block
         env:
           PR_BODY: ${{ github.event.pull_request.body }}
         run: |
           # Extract release-notes block from PR body
-          NOTES=$(echo "$PR_BODY" | sed -n '/```release-notes/,/```/p' | sed '1d;$d' | sed '/^[[:space:]]*$/d')
+          NOTES=$(printf '%s\n' "$PR_BODY" | sed -n '/```release-notes/,/```/p' | sed '1d;$d' | sed '/^[[:space:]]*$/d')
 
           if [ -z "$NOTES" ]; then
             echo "::error::Missing or empty 'release-notes' code block in PR description."
-            echo "Please add a ```release-notes block containing NONE or categorized notes (e.g., [BUGFIX], [FEATURE], [PERF])."
+            echo 'Please add a ```release-notes block containing NONE or categorized notes (e.g., [BUGFIX], [FEATURE], [PERF]).'
             exit 1
           fi
 
@@ -38,7 +40,7 @@ jobs:
 
           # Validate allowed prefixes matching enterprise Go ecosystem standard
           VALID_PREFIX_REGEX="^\[(FEATURE|ENHANCEMENT|PERF|BUGFIX|SECURITY|CHANGE)\][[:space:]]+.+:.+"
-          if ! echo "$NOTES" | grep -qE "$VALID_PREFIX_REGEX"; then
+          if ! printf '%s\n' "$NOTES" | grep -qE "$VALID_PREFIX_REGEX"; then
             echo "::error::Invalid release notes format: '$NOTES'"
             echo "Expected format: [TYPE] Component: Description"
             echo "Allowed types: [FEATURE], [ENHANCEMENT], [PERF], [BUGFIX], [SECURITY], [CHANGE], or NONE"

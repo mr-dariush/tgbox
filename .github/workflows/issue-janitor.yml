@@ -1,78 +1,39 @@
 name: Issue Janitor
 
 on:
-  issues:
-    types: [ opened, reopened ]
-  issue_comment:
-    types: [ created ]
   schedule:
-    - cron: '0 0 * * *'
+    # Run once daily at midnight UTC
+    - cron: "0 0 * * *"
   workflow_dispatch:
 
 permissions:
   contents: read
-  issues: write
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.event.issue.number || github.run_id }}
-  cancel-in-progress: false
 
 jobs:
-  close-blank-issue:
-    name: Close Blank Issues
+  janitor:
+    name: Stale Issues and PRs
     runs-on: ubuntu-latest
-    if: github.event_name == 'issues'
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
     steps:
-      - name: Inspect and Close Blank Issue
-        uses: ldez/no-blank-issue@800e2d0c81c9e0ca7bdb58f3e7480a74602d91e0 # v1.1.0
+      - name: Checkout Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: false
 
-  reactive-feedback-labels:
-    name: Handle Response to Need-More-Info
-    runs-on: ubuntu-latest
-    if: github.event_name == 'issue_comment' && !github.event.issue.pull_request
-    steps:
-      - name: Update Labels on Author Comment
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v7.0.1
+      - name: Mark and Close Stale Items
+        uses: actions/stale@4391f3da665fdf50b6810c1a66712fb9ba21aa93 # v11.0.0
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const issue = context.payload.issue;
-            const comment = context.payload.comment;
-            if (!issue || !comment) return;
-
-            // Ensure the comment was submitted by the original issue creator
-            if (comment.user.login !== issue.user.login) return;
-
-            const responseRequiredLabel = 'need-more-info';
-            const infoCompletedLabel = 'info-completed';
-
-            const labels = issue.labels.map(l => typeof l === 'string' ? l : l.name);
-            if (!labels.includes(responseRequiredLabel)) return;
-
-            await github.rest.issues.removeLabel({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: issue.number,
-              name: responseRequiredLabel,
-            }).catch(() => {});
-
-            await github.rest.issues.addLabels({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: issue.number,
-              labels: [infoCompletedLabel],
-            });
-
-  lock-stale-threads:
-    name: Lock Inactive Closed Discussions
-    runs-on: ubuntu-latest
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    steps:
-      - name: Lock Stale Closed Issues
-        uses: dessant/lock-threads@d42e5f49803f3c4e14ffee0378e31481265dda22 # v5.0.0
-        with:
-          process-only: 'issues'
-          issue-inactive-days: '180'
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          days-before-issue-stale: 60
+          days-before-issue-close: 7
+          stale-issue-label: "stale"
+          stale-issue-message: "This issue has been automatically marked as stale due to 60 days of inactivity. It will be closed in 7 days if no further activity occurs."
+          close-issue-message: "This issue has been automatically closed due to inactivity."
+          days-before-pr-stale: 60
+          days-before-pr-close: 7
+          stale-pr-label: "stale"
+          stale-pr-message: "This PR has been automatically marked as stale due to 60 days of inactivity. It will be closed in 7 days if no further activity occurs."
+          close-pr-message: "This PR has been automatically closed due to inactivity."
