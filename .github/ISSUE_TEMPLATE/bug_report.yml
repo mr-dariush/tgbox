@@ -1,0 +1,87 @@
+name: Bug report
+description: Report a reproducible defect or unexpected runtime behavior in tgbox.
+title: "[BUG]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please verify the issue is reproducible with the latest commit on `main` before submitting.
+  - type: checkboxes
+    id: prerequisites
+    attributes:
+      label: Pre-flight checks
+      options:
+        - label: I searched existing issues and discussions to ensure this is not a duplicate.
+          required: true
+        - label: I tested my code with the Go race detector enabled (`go test -race` or `go run -race`).
+          required: true
+        - label: I confirmed this defect originates from `tgbox`, not from raw upstream Telegram API server limits (e.g., FloodWait, Deactivated Account).
+          required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Output of `go version`, Operating System, and architecture (e.g. `go version go1.27.1 linux/amd64`).
+      placeholder: go version go1.27.1 linux/amd64
+    validations:
+      required: true
+  - type: dropdown
+    id: network-profile
+    attributes:
+      label: Network profile & Transport
+      description: Which network profile or transport layer configuration was active?
+      options:
+        - Default (No Profile)
+        - AndroidProfile (Abridged + PFS + Dynamic Buffers)
+        - DesktopProfile (Abridged + Segmentation + Fixed Windows)
+        - AndroidFakeTLSProfile (FakeTLS + PaddedIntermediate)
+        - Custom Profile
+    validations:
+      required: true
+  - type: dropdown
+    id: storage-backend
+    attributes:
+      label: Session & State storage backend
+      description: Which storage persistence adapter is configured?
+      options:
+        - Local BBolt (Default session & peer DB)
+        - Redis Multi-Tenant Store (store/redis)
+        - In-Memory Storage (internal/fsm)
+        - Custom Storage Implementation
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: Problem description
+      description: Clear and concise technical description of the failure mode.
+      placeholder: Explain what happened versus what was expected according to the interface contract.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction-code
+    attributes:
+      label: Minimal reproducible example
+      description: Provide a minimal, runnable Go snippet reproducing the problem. Do not submit sensitive session keys, bot tokens, or API hashes.
+      value: |
+        ```go
+        package main
+
+        import (
+            "context"
+            "github.com/mr-dariush/tgbox"
+        )
+
+        func main() {
+            // Minimal reproduction logic here
+        }
+        ```
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Stack trace or structured debug logs
+      description: Paste relevant `slog` output (with `trace_id` and `client_id` if available) or panic traces.
+      render: shell

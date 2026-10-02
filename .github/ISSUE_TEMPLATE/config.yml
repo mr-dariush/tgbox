@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Documentation
+    url: https://pkg.go.dev/github.com/mr-dariush/tgbox
+    about: Read the official GoDoc API documentation and package contracts.
+  - name: Questions & Architectural Discussions
+    url: https://github.com/mr-dariush/tgbox/discussions
+    about: Ask implementation questions or discuss concurrency design patterns.
+  - name: Security Advisories
+    url: https://github.com/mr-dariush/tgbox/security/advisories/new
+    about: Report sensitive MTProto vulnerabilities or cryptographic defects privately.

@@ -1,0 +1,38 @@
+name: Workflow Security
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - ".github/workflows/**"
+  pull_request:
+    branches: [ main ]
+    paths:
+      - ".github/workflows/**"
+  schedule:
+    - cron: "0 8 * * 1" # Weekly audit every Monday at 08:00 UTC
+  workflow_dispatch:
+
+permissions: { }
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  zizmor:
+    name: Zizmor Static Analysis
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4.2.2 pinned SHA
+        with:
+          persist-credentials: false
+
+      - name: Run Zizmor Workflow Linter
+        uses: zizmorcore/zizmor-action@cc914d7f3750a2d13d75c7f184a1060aa0e9d482 # v1.4.1 pinned SHA
+        with:
+          advanced-security: false
+          annotations: true

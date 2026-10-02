@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+prev_head="${1-}"
+new_head="${2-}"
+branch_checkout="${3-}"
+
+# Execute only when switching branches, not during single-file checkouts
+if [ "$branch_checkout" != "1" ] || [ "$prev_head" = "$new_head" ]; then
+    exit 0
+fi
+
+# Remove transient coverage profiles, profiling dumps, and benchmarks
+rm -f coverage.txt coverage.html c.out *.prof *.out *.test bench-results.txt
+
+# Remove lingering test database files created by local test executions
+rm -f test_*.db *.peers.db *.session.db
+
+exit 0

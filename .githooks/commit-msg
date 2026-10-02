@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+commit_file="${1-}"
+if [ -z "$commit_file" ] || [ ! -s "$commit_file" ]; then
+    exit 0
+fi
+
+# Terminal colors for diagnostic feedback
+red=$([ -t 2 ] && tput setaf 1 2>/dev/null || echo "")
+yellow=$([ -t 2 ] && tput setaf 3 2>/dev/null || echo "")
+reset=$([ -t 2 ] && tput sgr0 2>/dev/null || echo "")
+
+err() {
+    echo "${red}commit-msg error: $*${reset}" >&2
+}
+
+warn() {
+    echo "${yellow}commit-msg warning: $*${reset}" >&2
+}
+
+# Resolve git comment character safely
+comment_char="$(git config --get core.commentchar 2>/dev/null || echo '#')"
+if [ "$comment_char" = "auto" ] || [ -z "$comment_char" ]; then
+    comment_char='#'
+fi
+
+# Extract message content, stripping comments and scissors boundary
+clean_msg=$(awk -v c="$comment_char" '
+    /^# --* >8 --*/ { exit }
+    $0 !~ "^[ \t]*" c { print }
+' "$commit_file")
+
+# If message has no real text, let git handle the empty abort
+if ! echo "$clean_msg" | grep -q '[^[:space:]]'; then
+    exit 0
+fi
+
+# Extract the subject (first non-empty line)
+subject_line=$(echo "$clean_msg" | grep -v '^[[:space:]]*$' | head -n 1)
+
+# Bypass automated operations (merges, reverts, fixups, squashes)
+case "$subject_line" in
+    Merge*|Revert*|fixup\!*|squash\!*|amend\!*)
+        exit 0
+        ;;
+esac
+
+# 1. Enforce subject line length boundary (max 72 characters)
+if [ "${#subject_line}" -gt 72 ]; then
+    err "subject line exceeds 72 characters (current: ${#subject_line})"
+    echo "  \"$subject_line\"" >&2
+    echo "  Please shorten the first line to keep git log readable." >&2
+    exit 1
+fi
+
+# 2. Validate Conventional Commits syntax
+commit_regex='^(feat|fix|perf|refactor|docs|test|build|ci|chore)(\([a-zA-Z0-9_./-]+\))?(!)?: (.+)$'
+
+if [[ ! "$subject_line" =~ $commit_regex ]]; then
+    err "subject does not follow Conventional Commits format."
+    echo "" >&2
+    echo "Format:" >&2
+    echo "  <type>(<optional-scope>): <lowercase subject>" >&2
+    echo "" >&2
+    echo "Allowed types:" >&2
+    echo "  feat, fix, perf, refactor, docs, test, build, ci, chore" >&2
+    echo "" >&2
+    echo "Examples:" >&2
+    echo "  feat(network): add tcp segmentation for desktop profile" >&2
+    echo "  fix(dispatcher): resolve worker pool deadlock on shutdown" >&2
+    echo "  perf(pool): eliminate heap allocations in pipe through" >&2
+    echo "" >&2
+    exit 1
+fi
+
+subject_payload="${BASH_REMATCH[4]}"
+
+# 3. Reject trailing period in subject
+if [[ "$subject_payload" =~ \.$ ]]; then
+    err "subject line must not end with a period."
+    echo "  Current: \"$subject_line\"" >&2
+    exit 1
+fi
+
+# 4. Reject uppercase initial character in subject payload (parity with pr-checks.yml)
+first_char="${subject_payload:0:1}"
+if [[ "$first_char" =~ [A-Z] ]]; then
+    err "subject description must start with a lowercase letter."
+    echo "  Current: \"$subject_line\"" >&2
+    echo "  Try:     \"${subject_line/$first_char/${first_char,,}}\"" >&2
+    exit 1
+fi
+
+# 5. Prevent lazy commit messages that only state bug references without context
+if [[ "$subject_payload" =~ ^(fix(es)?|close[sd]?)[[:space:]]+#[0-9]+$ ]]; then
+    err "commit subject is too vague. State what changed, not just an issue ID."
+    echo "  Bad:  fix: #123" >&2
+    echo "  Good: fix(client): handle nil context during auth handshake (Fixes #123)" >&2
+    exit 1
+fi
+
+# 6. Warn on body lines exceeding 80 characters (excluding code blocks, markdown tables, and links)
+long_body_lines=$(echo "$clean_msg" | awk '
+    NR > 1 && length($0) > 80 && $0 !~ /^(http|https):\/\// && $0 !~ /^[ \t]*\|/ && $0 !~ /^[ \t]{4,}/ {
+        print NR ": " $0
+    }
+')
+
+if [ -n "$long_body_lines" ]; then
+    warn "body lines exceed 80 characters (consider wrapping non-code/URLs):"
+    echo "$long_body_lines" | sed 's/^/  /' >&2
+fi
+
+exit 0

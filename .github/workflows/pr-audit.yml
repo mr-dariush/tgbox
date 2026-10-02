@@ -1,0 +1,88 @@
+name: PR Audit
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check-release-notes:
+    name: Validate Release Notes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Validate Release Notes Block
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          # Extract release-notes block from PR body
+          NOTES=$(printf '%s\n' "$PR_BODY" | sed -n '/```release-notes/,/```/p' | sed '1d;$d' | sed '/^[[:space:]]*$/d')
+
+          if [ -z "$NOTES" ]; then
+            echo "::error::Missing or empty 'release-notes' code block in PR description."
+            echo 'Please add a ```release-notes block containing NONE or categorized notes (e.g., [BUGFIX], [FEATURE], [PERF]).'
+            exit 1
+          fi
+
+          if [ "$NOTES" = "NONE" ]; then
+            echo "Release notes marked as NONE. Passing validation."
+            exit 0
+          fi
+
+          # Validate allowed prefixes matching enterprise Go ecosystem standard
+          VALID_PREFIX_REGEX="^\[(FEATURE|ENHANCEMENT|PERF|BUGFIX|SECURITY|CHANGE)\][[:space:]]+.+:.+"
+          if ! printf '%s\n' "$NOTES" | grep -qE "$VALID_PREFIX_REGEX"; then
+            echo "::error::Invalid release notes format: '$NOTES'"
+            echo "Expected format: [TYPE] Component: Description"
+            echo "Allowed types: [FEATURE], [ENHANCEMENT], [PERF], [BUGFIX], [SECURITY], [CHANGE], or NONE"
+            exit 1
+          fi
+
+          echo "Release notes validation passed: $NOTES"
+
+  build-commits:
+    name: Check Commit-by-Commit Compilation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup Go Toolchain
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: "go.mod"
+          cache: true
+
+      - name: Verify compilation of every commit in range
+        run: |
+          set -eu -o pipefail
+
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+
+          echo "Auditing commit range: ${BASE_SHA}..${HEAD_SHA}"
+          COMMITS=$(git rev-list "${BASE_SHA}..${HEAD_SHA}")
+
+          for commit in $COMMITS; do
+            echo "==> Checking commit: ${commit}"
+            git checkout -q "${commit}"
+            if ! go test -run=^$ ./... > /dev/null; then
+              echo "::error::Commit ${commit} failed compilation or package consistency."
+              git --no-pager log -1 --format="Commit: %h%nAuthor: %an <%ae>%nSubject: %s" "${commit}"
+              exit 1
+            fi
+          done
+
+          echo "All commits in range compiled successfully."
