@@ -1,0 +1,185 @@
+version: "2"
+formatters:
+  enable:
+    - gci
+    - gofumpt
+    - goimports
+  settings:
+    gci:
+      sections:
+        - standard
+        - default
+        - prefix(github.com/mr-dariush/tgbox)
+    gofumpt:
+      extra:
+        group-params: true
+        clothe-returns: true
+        balance-calls: true
+    goimports:
+      local-prefixes:
+        - github.com/mr-dariush/tgbox
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+linters:
+  enable:
+    - depguard
+    - errorlint
+    - exptostd
+    - fatcontext
+    - gocritic
+    - godot
+    - govet
+    - loggercheck
+    - misspell
+    - modernize
+    - nilnesserr
+    - perfsprint
+    - predeclared
+    - revive
+    - sloglint
+    - staticcheck
+    - testifylint
+    - unconvert
+    - unused
+    - usestdlibvars
+    - whitespace
+  exclusions:
+    paths:
+      - ^.*\.(l|pb|y)\.go$
+    rules:
+      - linters:
+          - errcheck
+        text: Error return value of .((os\.)?std(out|err)\..*|.*Close|.*Flush|os\.Remove(All)?|.*print(f|ln)?|os\.(Un)?Setenv). is not checked
+      - linters:
+          - govet
+        text: "stdmethods: method Seek.* should have signature Seek"
+      - linters:
+          - revive
+        text: exported (.+) should have comment( \(or a comment on this block\))? or be unexported
+      - linters:
+          - errcheck
+        path: _test.go
+      - linters:
+          - staticcheck
+        text: '(labels.MetricName|v1\.(Endpoints|EndpointSubset|EndpointPort|EndpointAddress)) is deprecated: .*'
+  settings:
+    depguard:
+      rules:
+        main:
+          deny:
+            - pkg: "sync/atomic"
+              desc: "Use go.uber.org/atomic instead of sync/atomic"
+            - pkg: "io/ioutil"
+              desc: "Use corresponding 'os' or 'io' functions instead."
+            - pkg: "github.com/pkg/errors"
+              desc: "Use 'errors' or 'fmt' instead of github.com/pkg/errors"
+    errcheck:
+      exclude-functions:
+        - io.Copy
+        - io.WriteString
+        - (net/http.ResponseWriter).Write
+        - (*net/http.Server).Shutdown
+    gocritic:
+      enable-all: true
+      disabled-checks:
+        - appendAssign
+        - appendCombine
+        - badLock
+        - boolExprSimplify
+        - commentedOutCode
+        - deferInLoop
+        - docStub
+        - equalFold
+        - evalOrder
+        - exposedSyncMutex
+        - hexLiteral
+        - hugeParam
+        - importShadow
+        - ptrToRefParam
+        - rangeValCopy
+        - regexpSimplify
+        - returnAfterHttpError
+        - sloppyReassign
+        - sprintfQuotedString
+        - todoCommentWithoutDetail
+        - tooManyResultsChecker
+        - typeUnparen
+        - truncateCmp
+        - typeDefFirst
+        - unlabelStmt
+        - unnamedResult
+        - unnecessaryBlock
+        - unnecessaryDefer
+        - whyNoLint
+    govet:
+      disable:
+        - shadow
+        - fieldalignment
+      enable-all: true
+    modernize:
+      disable:
+        - omitzero
+        - newexpr
+    perfsprint:
+      int-conversion: true
+      err-error: true
+      errorf: true
+      sprintf1: true
+      strconcat: false
+      concat-loop: false
+    revive:
+      enable-all-rules: false
+      enable-default-rules: true
+      max-open-files: 2048
+      rules:
+        - name: blank-imports
+        - name: comment-spacings
+        - name: context-as-argument
+          arguments:
+            - allowTypesBefore: '*testing.T,testing.TB'
+        - name: context-keys-type
+        - name: dot-imports
+        - name: early-return
+          arguments:
+            - "preserveScope"
+        - name: empty-block
+          disabled: true
+        - name: error-naming
+        - name: error-return
+        - name: error-strings
+        - name: errorf
+        - name: exported
+        - name: increment-decrement
+        - name: indent-error-flow
+          arguments:
+            - "preserveScope"
+        - name: package-comments
+          disabled: true
+        - name: range
+        - name: receiver-naming
+        - name: redefines-builtin-id
+        - name: superfluous-else
+          arguments:
+            - "preserveScope"
+        - name: time-naming
+        - name: unnecessary-format
+        - name: unexported-return
+        - name: unreachable-code
+        - name: unused-parameter
+        - name: unused-receiver
+        - name: var-declaration
+        - name: var-naming
+          arguments:
+            - []
+            - []
+            - - skip-package-name-checks: true
+    testifylint:
+      disable:
+        - float-compare
+        - go-require
+      enable-all: true
+output:
+  show-stats: false
+run:
+  timeout: 15m

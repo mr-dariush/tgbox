@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+remote_name="${1-}"
+remote_url="${2-}"
+
+red=$([ -t 2 ] && tput setaf 1 2>/dev/null || echo "")
+yellow=$([ -t 2 ] && tput setaf 3 2>/dev/null || echo "")
+green=$([ -t 2 ] && tput setaf 2 2>/dev/null || echo "")
+reset=$([ -t 2 ] && tput sgr0 2>/dev/null || echo "")
+
+err() {
+    echo "${red}pre-push error: $*${reset}" >&2
+}
+
+info() {
+    echo "${green}==> $*${reset}" >&2
+}
+
+warn() {
+    echo "${yellow}pre-push warning: $*${reset}" >&2
+}
+
+z40="0000000000000000000000000000000000000000"
+has_commits_to_push=false
+
+# 1. Parse standard push payload line by line from stdin
+while read -r local_ref local_sha remote_ref remote_sha; do
+    # Ignore remote branch deletion operations
+    if [ "$local_sha" = "$z40" ] || [ "$local_ref" = "(delete)" ]; then
+        continue
+    fi
+
+    # Detect if target is the canonical repository
+    is_canonical=false
+    if [[ "$remote_url" =~ (github\.com[:/]mr-dariush/tgbox) ]]; then
+        is_canonical=true
+    fi
+
+    # Block direct push to main or master branch on canonical origin
+    if [ "$is_canonical" = true ] && [[ "$remote_ref" == "refs/heads/main" || "$remote_ref" == "refs/heads/master" ]]; then
+        err "direct push to protected branch '$remote_ref' is prohibited."
+        echo "  Push your work to a dedicated feature branch and open a Pull Request." >&2
+        echo "  Emergency override flag: git push --no-verify" >&2
+        exit 1
+    fi
+
+    has_commits_to_push=true
+done
+
+# If only deleting branches or no commits pushed, exit immediately
+if [ "$has_commits_to_push" = false ]; then
+    exit 0
+fi
+
+# Allow skipping static analysis via git configuration
+if [ "$(git config --bool --get tgbox.skip-pre-push-checks 2>/dev/null || echo false)" = "true" ]; then
+    warn "fast static checks skipped via git config tgbox.skip-pre-push-checks."
+    exit 0
+fi
+
+# 2. Execute fast local compiler verification
+if command -v go >/dev/null 2>&1; then
+    info "Running fast pre-push static analysis (go vet)..."
+    if ! go vet ./...; then
+        err "go vet detected issues. Fix compiler diagnostics before pushing."
+        exit 1
+    fi
+fi
+
+info "Pre-push verification passed."
+exit 0

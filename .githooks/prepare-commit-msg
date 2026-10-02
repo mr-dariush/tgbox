@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+# 1. Bypass non-interactive commits or automated operations.
+commit_source="${2-}"
+case "$commit_source" in
+    message|merge|squash)
+        exit 0
+        ;;
+esac
+
+commit_file="${1-}"
+if [ -z "$commit_file" ] || [ ! -f "$commit_file" ]; then
+    exit 0
+fi
+
+# 2. Allow opt-out via local or global git config.
+if [ "$(git config --bool --get tgbox.disable-commit-template 2>/dev/null || echo false)" = "true" ]; then
+    exit 0
+fi
+
+# 3. Resolve git comment character safely.
+comment_char="$(git config --get core.commentchar 2>/dev/null || echo '#')"
+if [ "$comment_char" = "auto" ] || [ -z "$comment_char" ]; then
+    comment_char='#'
+fi
+
+# 4. Check if the file already contains non-comment content.
+# If the author already supplied text, do not overwrite it.
+has_content=$(awk -v c="$comment_char" '
+    $0 !~ "^[ \t]*" c && NF { found = 1; exit }
+    END { print (found ? "1" : "0") }
+' "$commit_file")
+
+if [ "$has_content" = "1" ]; then
+    exit 0
+fi
+
+temp_file="$(mktemp)"
+trap 'rm -f "$temp_file"' EXIT
+
+# 5. Build and prepend tgbox Conventional Commits scaffold.
+cat <<EOF > "$temp_file"
+
+${comment_char} <type>(<scope>): <subject> (max 72 chars, imperative mood)
+${comment_char}
+${comment_char} [Why]: Explain the exact problem or context requiring this patch.
+${comment_char} [How]: Technical overview, concurrency invariants, allocation impact.
+${comment_char}
+${comment_char} Fixes #<issue_number>
+${comment_char}
+${comment_char} Allowed types: feat, fix, perf, refactor, docs, test, build, ci, chore
+${comment_char} Core scopes:   dispatcher, network, fsm, keepalive, pool, router, storage, client
+${comment_char} Note: Hot paths must maintain zero heap allocations (check AllocsPerRun).
+EOF
+
+cat "$commit_file" >> "$temp_file"
+cat "$temp_file" > "$commit_file"
+
+exit 0

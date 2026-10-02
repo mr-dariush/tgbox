@@ -1,0 +1,70 @@
+name: Fuzzing
+
+on:
+  schedule:
+    - cron: '0 3 * * 0' # Weekly on Sunday at 03:00 UTC
+  pull_request:
+    paths:
+      - 'network/**'
+      - 'internal/router/**'
+      - 'auth/**'
+      - '.github/workflows/fuzzing.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fuzz-suite:
+    name: Run Go Native Fuzz Tests
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        package:
+          - "./internal/router"
+          - "./network"
+          - "./auth"
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Go Toolchain
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: "go.mod"
+          cache: true
+
+      - name: Discover and Execute Package Fuzz Tests
+        run: |
+          set -euo pipefail
+          target_pkg="${{ matrix.package }}"
+          echo "Scanning fuzz targets in: ${target_pkg}"
+
+          # Extract all test functions starting with Fuzz in the given package
+          fuzz_tests=$(go test -list='^Fuzz' "${target_pkg}" 2>/dev/null | grep -E '^Fuzz' || true)
+
+          if [ -z "${fuzz_tests}" ]; then
+            echo "No Fuzz targets found in ${target_pkg}, running short package test."
+            go test -run='^Test' "${target_pkg}"
+            exit 0
+          fi
+
+          for test_name in $fuzz_tests; do
+            echo "==> Executing fuzz test: ${test_name} for 2 minutes"
+            go test -v -fuzz="^${test_name}$" -fuzztime=2m "${target_pkg}"
+          done
+
+      - name: Archive Crash Artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: failure()
+        with:
+          name: fuzz-crash-${{ strategy.job-index }}
+          path: "**/testdata/fuzz/"
+          retention-days: 14

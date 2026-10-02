@@ -1,0 +1,78 @@
+name: Issue Janitor
+
+on:
+  issues:
+    types: [ opened, reopened ]
+  issue_comment:
+    types: [ created ]
+  schedule:
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.issue.number || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  close-blank-issue:
+    name: Close Blank Issues
+    runs-on: ubuntu-latest
+    if: github.event_name == 'issues'
+    steps:
+      - name: Inspect and Close Blank Issue
+        uses: ldez/no-blank-issue@800e2d0c81c9e0ca7bdb58f3e7480a74602d91e0 # v1.1.0
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+  reactive-feedback-labels:
+    name: Handle Response to Need-More-Info
+    runs-on: ubuntu-latest
+    if: github.event_name == 'issue_comment' && !github.event.issue.pull_request
+    steps:
+      - name: Update Labels on Author Comment
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v7.0.1
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const issue = context.payload.issue;
+            const comment = context.payload.comment;
+            if (!issue || !comment) return;
+
+            // Ensure the comment was submitted by the original issue creator
+            if (comment.user.login !== issue.user.login) return;
+
+            const responseRequiredLabel = 'need-more-info';
+            const infoCompletedLabel = 'info-completed';
+
+            const labels = issue.labels.map(l => typeof l === 'string' ? l : l.name);
+            if (!labels.includes(responseRequiredLabel)) return;
+
+            await github.rest.issues.removeLabel({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issue.number,
+              name: responseRequiredLabel,
+            }).catch(() => {});
+
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issue.number,
+              labels: [infoCompletedLabel],
+            });
+
+  lock-stale-threads:
+    name: Lock Inactive Closed Discussions
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Lock Stale Closed Issues
+        uses: dessant/lock-threads@d42e5f49803f3c4e14ffee0378e31481265dda22 # v5.0.0
+        with:
+          process-only: 'issues'
+          issue-inactive-days: '180'
+          github-token: ${{ secrets.GITHUB_TOKEN }}

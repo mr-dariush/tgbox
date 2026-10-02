@@ -1,0 +1,47 @@
+name: Feature request
+description: Propose an architectural improvement, new middleware, or network capability for tgbox.
+title: "[FEATURE]: "
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please ensure the proposed feature maintains zero heap allocations in critical paths and respects Rob Pike's Go Proverbs.
+  - type: checkboxes
+    id: prerequisites
+    attributes:
+      label: Pre-flight checks
+      options:
+        - label: I searched existing discussions and confirmed this feature is not already supported or rejected.
+          required: true
+        - label: I understand that breaking changes to public exported interfaces (`MessageService`, `AdminService`, `StateManager`) require strong technical justification.
+          required: true
+  - type: textarea
+    id: problem-statement
+    attributes:
+      label: Problem statement
+      description: What architectural bottleneck or missing capability are you trying to resolve?
+      placeholder: Describe the current constraint (e.g., "Currently unable to intercept raw binary TL buffers before decryption").
+    validations:
+      required: true
+  - type: textarea
+    id: proposed-solution
+    attributes:
+      label: Proposed technical solution
+      description: Describe the design, interface contracts, and concurrency safety guarantees.
+      placeholder: Propose method signatures, struct additions, or middleware hooks.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives-considered
+    attributes:
+      label: Alternatives considered
+      description: Describe any alternative implementations or workarounds evaluated.
+    validations:
+      required: false
+  - type: checkboxes
+    id: willingness-to-pr
+    attributes:
+      label: Contribution
+      options:
+        - label: I am willing to implement this feature and submit a pull request with unit tests and race detection validation.
