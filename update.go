@@ -24,16 +24,26 @@ const (
 	KindChatMemberUpdated
 	// KindChatJoinRequest represents a pending request to join a chat.
 	KindChatJoinRequest
+	// KindChatMigrateTo represents a basic group upgrade to a supergroup channel.
+	KindChatMigrateTo
 )
 
+// ChatMigrateTo contains group migration details (old chat ID and target channel ID).
+type ChatMigrateTo struct {
+	OldChatID    int64
+	NewChannelID int64
+}
+
 // Update wraps various Telegram updates into a single normalized structure.
-// This struct is designed to be lightweight and easily accessible.
 type Update struct {
 	// Kind defines the classification of the update.
 	Kind UpdateKind
 
 	// Message contains the normalized message object if applicable.
 	Message *tg.Message
+
+	// MessageService contains service message details if applicable.
+	MessageService *tg.MessageService
 
 	// CallbackQuery contains the callback query information if applicable.
 	CallbackQuery *tg.UpdateBotCallbackQuery
@@ -50,11 +60,13 @@ type Update struct {
 	// JoinRequest contains the pending join request info if applicable.
 	JoinRequest *tg.UpdatePendingJoinRequests
 
+	// ChatMigrateTo contains group migration details if Kind == KindChatMigrateTo.
+	ChatMigrateTo *ChatMigrateTo
+
 	// Raw holds the original, unmodified raw update class from MTProto.
 	Raw tg.UpdateClass
 
-	// IsOutgoing indicates if this update was triggered synthetically
-	// by an outgoing RPC call (e.g., self-sent messages).
+	// IsOutgoing indicates if this update was triggered synthetically by an outgoing RPC call.
 	IsOutgoing bool
 }
 
@@ -62,6 +74,9 @@ type Update struct {
 func (u *Update) GetMessage() tg.MessageClass {
 	if u.Message != nil {
 		return u.Message
+	}
+	if u.MessageService != nil {
+		return u.MessageService
 	}
 	return nil
 }
@@ -83,8 +98,12 @@ func peerID(p tg.PeerClass) int64 {
 // Returns 0 if the update is not associated with a specific chat.
 func (u *Update) ChatID() int64 {
 	switch {
+	case u.ChatMigrateTo != nil:
+		return u.ChatMigrateTo.NewChannelID
 	case u.Message != nil:
 		return peerID(u.Message.PeerID)
+	case u.MessageService != nil:
+		return peerID(u.MessageService.PeerID)
 	case u.CallbackQuery != nil:
 		return peerID(u.CallbackQuery.Peer)
 	case u.ChatMember != nil:
@@ -118,6 +137,12 @@ func (u *Update) SenderID() int64 {
 		// can derive here.
 		if p, ok := u.Message.PeerID.(*tg.PeerUser); ok && !u.Message.Out {
 			return p.UserID
+		}
+	case u.MessageService != nil:
+		if u.MessageService.FromID != nil {
+			if p, ok := u.MessageService.FromID.(*tg.PeerUser); ok {
+				return p.UserID
+			}
 		}
 	case u.CallbackQuery != nil:
 		return u.CallbackQuery.UserID

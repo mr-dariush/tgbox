@@ -39,5 +39,6 @@ type StateManager interface {
 	GetState(ctx context.Context, chatID, userID int64) (string, error)
 	SetState(ctx context.Context, chatID, userID int64, state string, ttl time.Duration) error
 	ClearState(ctx context.Context, chatID, userID int64) error
+	MoveState(ctx context.Context, oldChatID, oldUserID, newChatID, newUserID int64) error
 	WatchExpired(ctx context.Context, handler func(chatID, userID int64)) error
 }

@@ -58,3 +58,25 @@ func TestOutgoingInterceptor(t *testing.T) {
 		})
 	}
 }
+
+func TestOutgoingInterceptor_PeerPropagation(t *testing.T) {
+	t.Parallel()
+
+	targetUser := &tg.InputPeerUser{UserID: 12345, AccessHash: 67890}
+	req := &tg.MessagesSendMessageRequest{Peer: targetUser}
+	resp := &tg.Updates{}
+
+	var capturedPeer tg.InputPeerClass
+	next := telegram.InvokeFunc(func(_ context.Context, _ bin.Encoder, _ bin.Decoder) error {
+		return nil
+	})
+
+	invoker := interceptor.NewOutgoingInterceptor(next, func(ctx context.Context, _ tg.UpdatesClass) error {
+		capturedPeer = interceptor.OutgoingPeer(ctx)
+		return nil
+	}, nil)
+
+	err := invoker.Invoke(context.Background(), req, resp)
+	require.NoError(t, err)
+	assert.Equal(t, targetUser, capturedPeer)
+}

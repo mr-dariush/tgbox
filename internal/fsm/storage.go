@@ -22,6 +22,9 @@ type Storage interface {
 
 	// Delete removes the state associated with the session key.
 	Delete(ctx context.Context, key string) error
+
+	// Move atomically renames a state key from oldKey to newKey.
+	Move(ctx context.Context, oldKey, newKey string) error
 }
 
 // ExpirationWatcher defines an optional extension for storage drivers capable of

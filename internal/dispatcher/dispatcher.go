@@ -190,6 +190,15 @@ func (d *Dispatcher[C, U]) Handle(c C, update U) {
 	d.shards[h%uint64(len(d.shards))].Push(c, update)
 }
 
+// HandleWait routes the update to its dedicated shard, waiting if the shard queue is temporarily full.
+func (d *Dispatcher[C, U]) HandleWait(ctx context.Context, c C, update U) bool {
+	if d.interceptor != nil && d.interceptor(c, update) {
+		return true
+	}
+	h := d.hashFunc(c, update)
+	return d.shards[h%uint64(len(d.shards))].PushWait(ctx, c, update)
+}
+
 // processEnvelope runs inside a shard worker and executes matching routes,
 // walking groups in ascending order. Within a group the first route whose
 // filter matches is executed; the handler may return ErrContinueGroups to
@@ -201,6 +210,10 @@ func (d *Dispatcher[C, U]) processEnvelope(c C, update U) {
 			if d.logger != nil {
 				d.logger.Error("panic recovered in shard worker", slog.Any("panic", r))
 			}
+		}
+		// Trigger context release hook if C implements an explicit releaser
+		if releaser, ok := any(c).(interface{ Release() }); ok {
+			releaser.Release()
 		}
 	}()
 
@@ -260,4 +273,13 @@ func (*Dispatcher[C, U]) executePipeline(r *route[C, U], c C, update U) error {
 		h = v(h)
 	}
 	return h(c, update)
+}
+
+// SetMetrics binds a telemetry reporter to all active shards.
+func (d *Dispatcher[C, U]) SetMetrics(m MetricsReporter) {
+	d.writeMu.Lock()
+	defer d.writeMu.Unlock()
+	for _, shard := range d.shards {
+		shard.SetMetrics(m)
+	}
 }

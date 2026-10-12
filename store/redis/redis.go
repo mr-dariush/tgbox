@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 
 	"github.com/mr-dariush/tgbox"
 	"github.com/mr-dariush/tgbox/internal/fsm"
+	"github.com/mr-dariush/tgbox/internal/syncstate"
 )
 
 // Compile-time verification that Store satisfies the tgbox contracts.
@@ -22,6 +24,7 @@ var (
 	_ tgbox.MultiTenantSessionStorage = (*Store)(nil)
 	_ fsm.Storage                     = (*Store)(nil)
 	_ fsm.ExpirationWatcher           = (*Store)(nil)
+	_ syncstate.StateStorage          = (*Store)(nil)
 )
 
 // ErrLockHeld indicates that the distributed lock is currently acquired by another cluster node.
@@ -137,6 +140,19 @@ func (s *Store) Delete(ctx context.Context, key string) error {
 	return nil
 }
 
+// Move atomically renames a state key from oldKey to newKey.
+func (s *Store) Move(ctx context.Context, oldKey, newKey string) error {
+	fullOldKey := s.fsmKey(oldKey)
+	fullNewKey := s.fsmKey(newKey)
+	if err := s.client.Rename(ctx, fullOldKey, fullNewKey).Err(); err != nil {
+		if errors.Is(err, goredis.Nil) || strings.Contains(err.Error(), "no such key") {
+			return fsm.ErrNotFound
+		}
+		return fmt.Errorf("fsm move %q to %q: %w", fullOldKey, fullNewKey, err)
+	}
+	return nil
+}
+
 // WatchExpired subscribes to Redis keyspace expiration notifications (__keyevent@*__:expired)
 // and invokes handler for every expired key belonging to this store's FSM namespace.
 // It guarantees instant, leak-free termination when ctx is canceled by closing the pubsub socket.
@@ -232,4 +248,118 @@ func (s *Store) Obtain(ctx context.Context, key string, ttl time.Duration) (tgbo
 		key:    lockKey,
 		value:  lockValue,
 	}, nil
+}
+
+// SaveState persists the state snapshot to Redis via HSET.
+func (s *Store) SaveState(ctx context.Context, clientID int64, snapshot syncstate.StateSnapshot) error {
+	key := fmt.Sprintf("%s:syncstate:%d", s.prefix, clientID)
+	err := s.client.HSet(ctx, key,
+		"pts", snapshot.PTS,
+		"qts", snapshot.QTS,
+		"date", snapshot.Date,
+		"seq", snapshot.Seq,
+	).Err()
+	if err != nil {
+		return fmt.Errorf("redis: save state %q: %w", key, err)
+	}
+	return nil
+}
+
+// LoadState retrieves the state snapshot from Redis.
+func (s *Store) LoadState(ctx context.Context, clientID int64) (syncstate.StateSnapshot, bool, error) {
+	key := fmt.Sprintf("%s:syncstate:%d", s.prefix, clientID)
+	res, err := s.client.HGetAll(ctx, key).Result()
+	if err != nil {
+		return syncstate.StateSnapshot{}, false, fmt.Errorf("redis: load state %q: %w", key, err)
+	}
+	if len(res) == 0 {
+		return syncstate.StateSnapshot{}, false, nil
+	}
+
+	parseInt := func(val string) int32 {
+		v, _ := strconv.ParseInt(val, 10, 32)
+		return int32(v)
+	}
+
+	return syncstate.StateSnapshot{
+		PTS:  parseInt(res["pts"]),
+		QTS:  parseInt(res["qts"]),
+		Date: parseInt(res["date"]),
+		Seq:  parseInt(res["seq"]),
+	}, true, nil
+}
+
+// SaveChannelPTS stores the channel PTS value in a dedicated Redis hash.
+func (s *Store) SaveChannelPTS(ctx context.Context, clientID, channelID int64, pts int32) error {
+	key := fmt.Sprintf("%s:syncstate:%d:channels", s.prefix, clientID)
+	if err := s.client.HSet(ctx, key, strconv.FormatInt(channelID, 10), pts).Err(); err != nil {
+		return fmt.Errorf("redis: save channel pts %q: %w", key, err)
+	}
+	return nil
+}
+
+// LoadChannelPTS retrieves the channel PTS from Redis.
+func (s *Store) LoadChannelPTS(ctx context.Context, clientID, channelID int64) (int32, bool, error) {
+	key := fmt.Sprintf("%s:syncstate:%d:channels", s.prefix, clientID)
+	val, err := s.client.HGet(ctx, key, strconv.FormatInt(channelID, 10)).Result()
+	if err != nil {
+		if errors.Is(err, goredis.Nil) {
+			return 0, false, nil
+		}
+		return 0, false, fmt.Errorf("redis: load channel pts %q: %w", key, err)
+	}
+	v, _ := strconv.ParseInt(val, 10, 32)
+	return int32(v), true, nil
+}
+
+// ForEachChannelPTS iterates over all channel PTS values stored in Redis for the given client.
+func (s *Store) ForEachChannelPTS(ctx context.Context, clientID int64, fn func(channelID int64, pts int32) error) error {
+	key := fmt.Sprintf("%s:syncstate:%d:channels", s.prefix, clientID)
+	res, err := s.client.HGetAll(ctx, key).Result()
+	if err != nil {
+		return fmt.Errorf("redis: load all channels pts %q: %w", key, err)
+	}
+	for chStr, ptsStr := range res {
+		ch, err := strconv.ParseInt(chStr, 10, 64)
+		if err != nil {
+			continue
+		}
+		pts, err := strconv.ParseInt(ptsStr, 10, 32)
+		if err != nil {
+			continue
+		}
+		if err := fn(ch, int32(pts)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// SetDialogNotLoaded stores the recovery flag for a dialog in Redis.
+func (s *Store) SetDialogNotLoaded(ctx context.Context, clientID, dialogID int64, notLoaded bool) error {
+	key := fmt.Sprintf("%s:syncstate:%d:recovery", s.prefix, clientID)
+	field := strconv.FormatInt(dialogID, 10)
+	if notLoaded {
+		if err := s.client.HSet(ctx, key, field, "1").Err(); err != nil {
+			return fmt.Errorf("redis: set dialog recovery %q: %w", key, err)
+		}
+	} else {
+		if err := s.client.HDel(ctx, key, field).Err(); err != nil {
+			return fmt.Errorf("redis: del dialog recovery %q: %w", key, err)
+		}
+	}
+	return nil
+}
+
+// IsDialogNotLoaded retrieves the recovery flag for a dialog from Redis.
+func (s *Store) IsDialogNotLoaded(ctx context.Context, clientID, dialogID int64) (bool, error) {
+	key := fmt.Sprintf("%s:syncstate:%d:recovery", s.prefix, clientID)
+	val, err := s.client.HGet(ctx, key, strconv.FormatInt(dialogID, 10)).Result()
+	if err != nil {
+		if errors.Is(err, goredis.Nil) {
+			return false, nil
+		}
+		return false, fmt.Errorf("redis: get dialog recovery %q: %w", key, err)
+	}
+	return val == "1", nil
 }

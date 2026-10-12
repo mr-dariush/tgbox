@@ -14,7 +14,10 @@ import (
 
 type contextKey string
 
-const isOutgoingKey contextKey = "tgbox_outgoing"
+const (
+	isOutgoingKey   contextKey = "tgbox_outgoing"
+	outgoingPeerKey contextKey = "tgbox_outgoing_peer"
+)
 
 // WithOutgoing marks the context as originating from an outgoing (self-sent) call.
 func WithOutgoing(ctx context.Context) context.Context {
@@ -24,6 +27,19 @@ func WithOutgoing(ctx context.Context) context.Context {
 // IsOutgoing checks if the context originates from an outgoing (self-sent) call.
 func IsOutgoing(ctx context.Context) bool {
 	return ctx.Value(isOutgoingKey) != nil
+}
+
+// WithOutgoingPeer associates the destination input peer with an outgoing request context.
+func WithOutgoingPeer(ctx context.Context, peer tg.InputPeerClass) context.Context {
+	return context.WithValue(ctx, outgoingPeerKey, peer)
+}
+
+// OutgoingPeer retrieves the target input peer from the context if present.
+func OutgoingPeer(ctx context.Context) tg.InputPeerClass {
+	if val, ok := ctx.Value(outgoingPeerKey).(tg.InputPeerClass); ok {
+		return val
+	}
+	return nil
 }
 
 // DispatcherFunc defines the callback signature to inject synthetic updates back into the pipeline.
@@ -81,16 +97,26 @@ func (o *OutgoingInterceptor) Invoke(ctx context.Context, input bin.Encoder, out
 	span.SetStatus(codes.Ok, "success")
 
 	// Sniff only if the call succeeded and matches an outgoing message/media method
-	switch input.(type) {
-	case *tg.MessagesSendMessageRequest,
-		*tg.MessagesSendMediaRequest,
-		*tg.MessagesSendMultiMediaRequest,
-		*tg.MessagesForwardMessagesRequest:
+	var targetPeer tg.InputPeerClass
+	switch req := input.(type) {
+	case *tg.MessagesSendMessageRequest:
+		targetPeer = req.Peer
+	case *tg.MessagesSendMediaRequest:
+		targetPeer = req.Peer
+	case *tg.MessagesSendMultiMediaRequest:
+		targetPeer = req.Peer
+	case *tg.MessagesForwardMessagesRequest:
+		targetPeer = req.ToPeer
+	default:
+		return nil
+	}
 
-		// Extract the returned updates and inject them with the marked outgoing context
-		if updates, ok := output.(tg.UpdatesClass); ok {
-			_ = o.dispatch(WithOutgoing(ctx), updates)
+	if updates, ok := output.(tg.UpdatesClass); ok {
+		outCtx := WithOutgoing(ctx)
+		if targetPeer != nil {
+			outCtx = WithOutgoingPeer(outCtx, targetPeer)
 		}
+		_ = o.dispatch(outCtx, updates)
 	}
 
 	return nil
