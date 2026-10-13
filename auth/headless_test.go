@@ -203,11 +203,15 @@ func TestHeadlessFSM_2FA_Password_Lifecycle(t *testing.T) {
 
 		invoker := &mockInvoker{
 			invokeFunc: func(_ context.Context, input bin.Encoder, output bin.Decoder) error {
-				if _, ok := input.(*tg.AuthSendCodeRequest); ok {
-					setAuthSentCodeSuccess(output, 777)
+				switch input.(type) {
+				case *tg.AuthSendCodeRequest:
+					setAuthSentCode(output, "hash-123")
 					return nil
+				case *tg.AuthSignInRequest:
+					return tgerr.New(400, "SESSION_PASSWORD_NEEDED")
+				default:
+					return tgerr.New(400, "PASSWORD_HASH_INVALID")
 				}
-				return nil
 			},
 		}
 
@@ -238,10 +242,9 @@ func TestHeadlessFSM_2FA_Password_Lifecycle(t *testing.T) {
 					return nil
 				case *tg.AuthSignInRequest:
 					return tgerr.New(400, "SESSION_PASSWORD_NEEDED")
-				case *tg.AccountGetPasswordRequest:
+				default:
 					return tgerr.New(500, "INTERNAL_RPC_ERROR")
 				}
-				return nil
 			},
 		}
 
@@ -301,8 +304,7 @@ func TestHeadlessFSM_EmptyPhone_And_CodeSuccess(t *testing.T) {
 		sessID := "sess-code-success"
 		invoker := &mockInvoker{
 			invokeFunc: func(_ context.Context, input bin.Encoder, output bin.Decoder) error {
-				switch input.(type) {
-				case *tg.AuthSendCodeRequest:
+				if _, ok := input.(*tg.AuthSendCodeRequest); ok {
 					setAuthSentCodeSuccess(output, 777)
 					return nil
 				}
