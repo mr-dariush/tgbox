@@ -1980,7 +1980,7 @@ func TestPipeline_ChannelPool_ConcurrentWorkerDrain(t *testing.T) {
 	pool := channelpool.NewWorkerPool(
 		api,
 		channelpool.MinConcurrency,
-		func(batch channelpool.ChannelDifferenceBatch) error {
+		func(_ channelpool.ChannelDifferenceBatch) error {
 			curr := activeGoroutines.Inc()
 			if curr > maxActiveObserved.Load() {
 				maxActiveObserved.Store(curr)
@@ -1994,7 +1994,8 @@ func TestPipeline_ChannelPool_ConcurrentWorkerDrain(t *testing.T) {
 		nil,
 	)
 
-	ctx := t.Context()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	pool.Start(ctx)
 
 	var wg sync.WaitGroup
@@ -2100,7 +2101,7 @@ func BenchmarkPipeline_Disruptor_IngressThroughput(b *testing.B) {
 	}
 	seq := disruptor.NewSequencer(ring, nil)
 
-	var ctx, cancel = context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	poller := disruptor.NewSingleConsumerPoller(ring, 10*time.Microsecond)

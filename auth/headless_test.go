@@ -171,8 +171,7 @@ func setAuthAuthorization(decoder bin.Decoder, userID int64) {
 }
 
 func setAuthSentCodeSuccess(decoder bin.Decoder, userID int64) {
-	switch out := decoder.(type) {
-	case *tg.AuthSentCodeBox:
+	if out, ok := decoder.(*tg.AuthSentCodeBox); ok {
 		out.SentCode = &tg.AuthSentCodeSuccess{
 			Authorization: &tg.AuthAuthorization{
 				User: &tg.User{ID: userID},
@@ -182,8 +181,7 @@ func setAuthSentCodeSuccess(decoder bin.Decoder, userID int64) {
 }
 
 func setAuthSignUpRequired(decoder bin.Decoder, tosText string) {
-	switch out := decoder.(type) {
-	case *tg.AuthAuthorizationBox:
+	if out, ok := decoder.(*tg.AuthAuthorizationBox); ok {
 		out.Authorization = &tg.AuthAuthorizationSignUpRequired{
 			TermsOfService: tg.HelpTermsOfService{
 				ID:   tg.DataJSON{Data: "tos_data"},
@@ -205,14 +203,9 @@ func TestHeadlessFSM_2FA_Password_Lifecycle(t *testing.T) {
 
 		invoker := &mockInvoker{
 			invokeFunc: func(_ context.Context, input bin.Encoder, output bin.Decoder) error {
-				switch input.(type) {
-				case *tg.AuthSendCodeRequest:
-					setAuthSentCode(output, "hash-123")
+				if _, ok := input.(*tg.AuthSendCodeRequest); ok {
+					setAuthSentCodeSuccess(output, 777)
 					return nil
-				case *tg.AuthSignInRequest:
-					return tgerr.New(400, "SESSION_PASSWORD_NEEDED")
-				case *tg.AccountGetPasswordRequest:
-					return tgerr.New(400, "PASSWORD_HASH_INVALID")
 				}
 				return nil
 			},

@@ -127,7 +127,7 @@ func TestBboltStateStorage_DialogRecovery_And_Hooks(t *testing.T) {
 	defer func() { require.NoError(t, peerCloser.Close()) }()
 
 	called := false
-	baseHandler := telegram.UpdateHandlerFunc(func(ctx context.Context, u tg.UpdatesClass) error {
+	baseHandler := telegram.UpdateHandlerFunc(func(_ context.Context, _ tg.UpdatesClass) error {
 		called = true
 		return nil
 	})
