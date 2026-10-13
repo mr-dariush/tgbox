@@ -169,3 +169,296 @@ func setAuthAuthorization(decoder bin.Decoder, userID int64) {
 		out.Authorization = &tg.AuthAuthorization{User: &tg.User{ID: userID}}
 	}
 }
+
+func setAuthSentCodeSuccess(decoder bin.Decoder, userID int64) {
+	switch out := decoder.(type) {
+	case *tg.AuthSentCodeBox:
+		out.SentCode = &tg.AuthSentCodeSuccess{
+			Authorization: &tg.AuthAuthorization{
+				User: &tg.User{ID: userID},
+			},
+		}
+	}
+}
+
+func setAuthSignUpRequired(decoder bin.Decoder, tosText string) {
+	switch out := decoder.(type) {
+	case *tg.AuthAuthorizationBox:
+		out.Authorization = &tg.AuthAuthorizationSignUpRequired{
+			TermsOfService: tg.HelpTermsOfService{
+				ID:   tg.DataJSON{Data: "tos_data"},
+				Text: tosText,
+			},
+		}
+	}
+}
+
+func TestHeadlessFSM_2FA_Password_Lifecycle(t *testing.T) {
+	t.Run("Password retry then fail on max retries", func(t *testing.T) {
+		eventsCh := make(chan tgboxauth.Event, 10)
+		actionsCh := make(chan tgboxauth.Action, 10)
+
+		sessID := "sess-pwd"
+		actionsCh <- tgboxauth.Action{SessionID: sessID, Value: "12345"}
+		actionsCh <- tgboxauth.Action{SessionID: sessID, Value: "wrong-pass-1"}
+		actionsCh <- tgboxauth.Action{SessionID: sessID, Value: "wrong-pass-2"}
+
+		invoker := &mockInvoker{
+			invokeFunc: func(_ context.Context, input bin.Encoder, output bin.Decoder) error {
+				switch input.(type) {
+				case *tg.AuthSendCodeRequest:
+					setAuthSentCode(output, "hash-123")
+					return nil
+				case *tg.AuthSignInRequest:
+					return tgerr.New(400, "SESSION_PASSWORD_NEEDED")
+				case *tg.AccountGetPasswordRequest:
+					return tgerr.New(400, "PASSWORD_HASH_INVALID")
+				}
+				return nil
+			},
+		}
+
+		tgClient := tg.NewClient(invoker)
+		authClient := auth.NewClient(tgClient, rand.Reader, 12345, "mock_hash")
+		fsm := tgboxauth.NewHeadlessFSM(sessID, eventsCh, actionsCh,
+			tgboxauth.WithTimeout(200*time.Millisecond),
+			tgboxauth.WithMaxRetries(2),
+		)
+
+		err := fsm.Authenticate(context.Background(), authClient, "+1234567890")
+		require.ErrorIs(t, err, tgboxauth.ErrMaxRetriesPassword)
+	})
+
+	t.Run("Password fatal failure", func(t *testing.T) {
+		eventsCh := make(chan tgboxauth.Event, 10)
+		actionsCh := make(chan tgboxauth.Action, 10)
+
+		sessID := "sess-fatal-pwd"
+		actionsCh <- tgboxauth.Action{SessionID: sessID, Value: "12345"}
+		actionsCh <- tgboxauth.Action{SessionID: sessID, Value: "some-pass"}
+
+		invoker := &mockInvoker{
+			invokeFunc: func(_ context.Context, input bin.Encoder, output bin.Decoder) error {
+				switch input.(type) {
+				case *tg.AuthSendCodeRequest:
+					setAuthSentCode(output, "hash-123")
+					return nil
+				case *tg.AuthSignInRequest:
+					return tgerr.New(400, "SESSION_PASSWORD_NEEDED")
+				case *tg.AccountGetPasswordRequest:
+					return tgerr.New(500, "INTERNAL_RPC_ERROR")
+				}
+				return nil
+			},
+		}
+
+		tgClient := tg.NewClient(invoker)
+		authClient := auth.NewClient(tgClient, rand.Reader, 12345, "mock_hash")
+		fsm := tgboxauth.NewHeadlessFSM(sessID, eventsCh, actionsCh,
+			tgboxauth.WithTimeout(200*time.Millisecond),
+			tgboxauth.WithMaxRetries(2),
+		)
+
+		err := fsm.Authenticate(context.Background(), authClient, "+1234567890")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "password verification failed")
+	})
+}
+
+func TestHeadlessFSM_EmptyPhone_And_CodeSuccess(t *testing.T) {
+	t.Run("Empty phone asks and resolves", func(t *testing.T) {
+		eventsCh := make(chan tgboxauth.Event, 10)
+		actionsCh := make(chan tgboxauth.Action, 10)
+
+		sessID := "sess-empty-phone"
+		actionsCh <- tgboxauth.Action{SessionID: sessID, Value: "+1987654321"}
+		actionsCh <- tgboxauth.Action{SessionID: sessID, Value: "54321"}
+
+		var sentPhone string
+		invoker := &mockInvoker{
+			invokeFunc: func(_ context.Context, input bin.Encoder, output bin.Decoder) error {
+				switch req := input.(type) {
+				case *tg.AuthSendCodeRequest:
+					sentPhone = req.PhoneNumber
+					setAuthSentCode(output, "hash-empty")
+					return nil
+				case *tg.AuthSignInRequest:
+					setAuthAuthorization(output, 555)
+					return nil
+				}
+				return nil
+			},
+		}
+
+		tgClient := tg.NewClient(invoker)
+		authClient := auth.NewClient(tgClient, rand.Reader, 12345, "mock_hash")
+		fsm := tgboxauth.NewHeadlessFSM(sessID, eventsCh, actionsCh,
+			tgboxauth.WithTimeout(200*time.Millisecond),
+		)
+
+		err := fsm.Authenticate(context.Background(), authClient, "")
+		require.NoError(t, err)
+		assert.Equal(t, "+1987654321", sentPhone)
+	})
+
+	t.Run("AuthSentCodeSuccess bypasses OTP", func(t *testing.T) {
+		eventsCh := make(chan tgboxauth.Event, 10)
+		actionsCh := make(chan tgboxauth.Action, 10)
+
+		sessID := "sess-code-success"
+		invoker := &mockInvoker{
+			invokeFunc: func(_ context.Context, input bin.Encoder, output bin.Decoder) error {
+				switch input.(type) {
+				case *tg.AuthSendCodeRequest:
+					setAuthSentCodeSuccess(output, 777)
+					return nil
+				}
+				return nil
+			},
+		}
+
+		tgClient := tg.NewClient(invoker)
+		authClient := auth.NewClient(tgClient, rand.Reader, 12345, "mock_hash")
+		fsm := tgboxauth.NewHeadlessFSM(sessID, eventsCh, actionsCh,
+			tgboxauth.WithTimeout(200*time.Millisecond),
+		)
+
+		err := fsm.Authenticate(context.Background(), authClient, "+1234567890")
+		require.NoError(t, err)
+
+		close(eventsCh)
+		var eventTypes []tgboxauth.EventType
+		for ev := range eventsCh {
+			eventTypes = append(eventTypes, ev.Type)
+		}
+		assert.Contains(t, eventTypes, tgboxauth.EventTypeSuccess)
+	})
+}
+
+func TestHeadlessFSM_SignUp_And_TOS_Lifecycle(t *testing.T) {
+	t.Run("Decline TOS aborts flow", func(t *testing.T) {
+		eventsCh := make(chan tgboxauth.Event, 10)
+		actionsCh := make(chan tgboxauth.Action, 10)
+
+		sessID := "sess-tos-decline"
+		actionsCh <- tgboxauth.Action{SessionID: sessID, Value: "12345"}
+		actionsCh <- tgboxauth.Action{SessionID: sessID, AcceptTOS: false}
+
+		invoker := &mockInvoker{
+			invokeFunc: func(_ context.Context, input bin.Encoder, output bin.Decoder) error {
+				switch input.(type) {
+				case *tg.AuthSendCodeRequest:
+					setAuthSentCode(output, "hash-tos")
+					return nil
+				case *tg.AuthSignInRequest:
+					setAuthSignUpRequired(output, "Mandatory Terms")
+					return nil
+				}
+				return nil
+			},
+		}
+
+		tgClient := tg.NewClient(invoker)
+		authClient := auth.NewClient(tgClient, rand.Reader, 12345, "mock_hash")
+		fsm := tgboxauth.NewHeadlessFSM(sessID, eventsCh, actionsCh,
+			tgboxauth.WithTimeout(200*time.Millisecond),
+		)
+
+		err := fsm.Authenticate(context.Background(), authClient, "+1234567890")
+		require.ErrorIs(t, err, tgboxauth.ErrTOSDeclined)
+	})
+
+	t.Run("Missing sign up first name", func(t *testing.T) {
+		eventsCh := make(chan tgboxauth.Event, 10)
+		actionsCh := make(chan tgboxauth.Action, 10)
+
+		sessID := "sess-missing-name"
+		actionsCh <- tgboxauth.Action{SessionID: sessID, Value: "12345"}
+		actionsCh <- tgboxauth.Action{SessionID: sessID, AcceptTOS: true}
+		actionsCh <- tgboxauth.Action{SessionID: sessID, SignUp: &tgboxauth.SignUpInfo{FirstName: ""}}
+
+		invoker := &mockInvoker{
+			invokeFunc: func(_ context.Context, input bin.Encoder, output bin.Decoder) error {
+				switch input.(type) {
+				case *tg.AuthSendCodeRequest:
+					setAuthSentCode(output, "hash-signup")
+					return nil
+				case *tg.AuthSignInRequest:
+					setAuthSignUpRequired(output, "Terms")
+					return nil
+				case *tg.HelpAcceptTermsOfServiceRequest:
+					return nil
+				}
+				return nil
+			},
+		}
+
+		tgClient := tg.NewClient(invoker)
+		authClient := auth.NewClient(tgClient, rand.Reader, 12345, "mock_hash")
+		fsm := tgboxauth.NewHeadlessFSM(sessID, eventsCh, actionsCh,
+			tgboxauth.WithTimeout(200*time.Millisecond),
+		)
+
+		err := fsm.Authenticate(context.Background(), authClient, "+1234567890")
+		require.ErrorIs(t, err, tgboxauth.ErrSignUpInfoMissing)
+	})
+
+	t.Run("Accept TOS and register new user", func(t *testing.T) {
+		eventsCh := make(chan tgboxauth.Event, 10)
+		actionsCh := make(chan tgboxauth.Action, 10)
+
+		sessID := "sess-signup-success"
+		actionsCh <- tgboxauth.Action{SessionID: sessID, Value: "12345"}
+		actionsCh <- tgboxauth.Action{SessionID: sessID, AcceptTOS: true}
+		actionsCh <- tgboxauth.Action{SessionID: sessID, SignUp: &tgboxauth.SignUpInfo{FirstName: "John", LastName: "Doe"}}
+
+		var acceptedTOSID int
+		var registeredFirst string
+		invoker := &mockInvoker{
+			invokeFunc: func(_ context.Context, input bin.Encoder, output bin.Decoder) error {
+				switch req := input.(type) {
+				case *tg.AuthSendCodeRequest:
+					setAuthSentCode(output, "hash-reg")
+					return nil
+				case *tg.AuthSignInRequest:
+					setAuthSignUpRequired(output, "Please agree to Terms")
+					return nil
+				case *tg.HelpAcceptTermsOfServiceRequest:
+					acceptedTOSID = 1
+					return nil
+				case *tg.AuthSignUpRequest:
+					registeredFirst = req.FirstName
+					setAuthAuthorization(output, 888)
+					return nil
+				}
+				return nil
+			},
+		}
+
+		tgClient := tg.NewClient(invoker)
+		authClient := auth.NewClient(tgClient, rand.Reader, 12345, "mock_hash")
+		fsm := tgboxauth.NewHeadlessFSM(sessID, eventsCh, actionsCh,
+			tgboxauth.WithTimeout(200*time.Millisecond),
+		)
+
+		err := fsm.Authenticate(context.Background(), authClient, "+1234567890")
+		require.NoError(t, err)
+		assert.Equal(t, 1, acceptedTOSID)
+		assert.Equal(t, "John", registeredFirst)
+	})
+}
+
+func TestSignUpInfo_ExtractUserInfo(t *testing.T) {
+	t.Parallel()
+
+	var nilInfo *tgboxauth.SignUpInfo
+	assert.Empty(t, nilInfo.ExtractUserInfo().FirstName)
+
+	info := &tgboxauth.SignUpInfo{
+		FirstName: "Alice",
+		LastName:  "Smith",
+	}
+	extracted := info.ExtractUserInfo()
+	assert.Equal(t, "Alice", extracted.FirstName)
+	assert.Equal(t, "Smith", extracted.LastName)
+}

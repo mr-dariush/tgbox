@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -17,7 +19,9 @@ import (
 	"go.uber.org/atomic"
 
 	"github.com/mr-dariush/tgbox/internal/channelpool"
+	"github.com/mr-dariush/tgbox/internal/dispatcher"
 	"github.com/mr-dariush/tgbox/internal/disruptor"
+	tgboxstorage "github.com/mr-dariush/tgbox/internal/storage"
 	"github.com/mr-dariush/tgbox/internal/syncstate"
 )
 
@@ -1329,4 +1333,956 @@ func TestPipeline_Difference_FloodWaitRecovery(t *testing.T) {
 
 	// 4. Assert that handleUpdatesTooLong was NEVER called (zero dialogs sweep).
 	assert.Zero(t, invoker.dialogsCalls.Load(), "handleUpdatesTooLong must not be invoked on FLOOD_WAIT")
+}
+
+func TestPipeline_PolymorphicUpdates_CoverageBooster(t *testing.T) {
+	t.Parallel()
+
+	dir := filepath.Join(t.TempDir(), "polymorphic_coverage")
+	c, err := New(dir,
+		WithAppID(123),
+		WithAppHash("deadbeef"),
+		WithAutoPeerCaching(false),
+	)
+	require.NoError(t, err)
+	defer func() { _ = c.Close() }()
+
+	ctx := t.Context()
+	c.dispatcher.Start(ctx)
+	go c.startDisruptorConsumer(ctx)
+
+	var (
+		editedMsgCalled   atomic.Bool
+		deletedMsgCalled  atomic.Bool
+		callbackCalled    atomic.Bool
+		inlineCalled      atomic.Bool
+		chatMemberCalled  atomic.Bool
+		joinRequestCalled atomic.Bool
+	)
+
+	c.OnEditedMessage(func(_ *Context, _ *Update) bool { return true }, func(_ *Context, _ *Update) error {
+		editedMsgCalled.Store(true)
+		return nil
+	})
+	c.OnDeletedMessages(func(_ *Context, _ *Update) bool { return true }, func(_ *Context, _ *Update) error {
+		deletedMsgCalled.Store(true)
+		return nil
+	})
+	c.OnCallbackQuery(func(_ *Context, _ *Update) bool { return true }, func(_ *Context, _ *Update) error {
+		callbackCalled.Store(true)
+		return nil
+	})
+	c.OnInlineQuery(func(_ *Context, _ *Update) bool { return true }, func(_ *Context, _ *Update) error {
+		inlineCalled.Store(true)
+		return nil
+	})
+	c.OnChatMemberUpdated(func(_ *Context, _ *Update) bool { return true }, func(_ *Context, _ *Update) error {
+		chatMemberCalled.Store(true)
+		return nil
+	})
+	c.OnChatJoinRequest(func(_ *Context, _ *Update) bool { return true }, func(_ *Context, _ *Update) error {
+		joinRequestCalled.Store(true)
+		return nil
+	})
+
+	// 1. Establish baseline global PTS
+	baselineUpd := &tg.Updates{
+		Updates: []tg.UpdateClass{
+			&tg.UpdateNewMessage{
+				Message:  &tg.Message{ID: 100, PeerID: &tg.PeerChat{ChatID: 700}},
+				Pts:      100,
+				PtsCount: 1,
+			},
+		},
+	}
+	require.NoError(t, c.handleUpdates(ctx, baselineUpd))
+
+	// 2. Exercise all global PTS update variants
+	globalPtsUpdates := []tg.UpdateClass{
+		&tg.UpdateEditMessage{
+			Message:  &tg.Message{ID: 101, PeerID: &tg.PeerChat{ChatID: 700}},
+			Pts:      101,
+			PtsCount: 1,
+		},
+		&tg.UpdateDeleteMessages{
+			Messages: []int{101},
+			Pts:      102,
+			PtsCount: 1,
+		},
+		&tg.UpdateReadHistoryInbox{
+			Peer:     &tg.PeerChat{ChatID: 700},
+			MaxID:    101,
+			Pts:      103,
+			PtsCount: 1,
+		},
+		&tg.UpdateReadHistoryOutbox{
+			Peer:     &tg.PeerChat{ChatID: 700},
+			MaxID:    101,
+			Pts:      104,
+			PtsCount: 1,
+		},
+		&tg.UpdatePinnedMessages{
+			Peer:     &tg.PeerChat{ChatID: 700},
+			Messages: []int{101},
+			Pts:      105,
+			PtsCount: 1,
+		},
+		&tg.UpdateReadMessagesContents{
+			Messages: []int{101},
+			Pts:      106,
+			PtsCount: 1,
+		},
+		&tg.UpdateWebPage{
+			Webpage:  &tg.WebPageEmpty{ID: 1},
+			Pts:      107,
+			PtsCount: 1,
+		},
+		&tg.UpdateFolderPeers{
+			FolderPeers: []tg.FolderPeer{},
+			Pts:         108,
+			PtsCount:    1,
+		},
+	}
+	for _, u := range globalPtsUpdates {
+		wrapper := &tg.Updates{Updates: []tg.UpdateClass{u}}
+		require.NoError(t, c.handleUpdates(ctx, wrapper))
+	}
+
+	// 3. Exercise QTS update variants
+	qtsUpdates := []tg.UpdateClass{
+		&tg.UpdateNewEncryptedMessage{Qts: 50},
+		&tg.UpdateMessagePollVote{Qts: 51, PollID: 1, Peer: &tg.PeerUser{UserID: 2}},
+		&tg.UpdateBotStopped{Qts: 52, UserID: 3, Stopped: true},
+		&tg.UpdateChatParticipant{Qts: 53, ChatID: 700, UserID: 4},
+		&tg.UpdateChannelParticipant{Qts: 54, ChannelID: 800, UserID: 5},
+		&tg.UpdateBotChatInviteRequester{Qts: 55, UserID: 6},
+		&tg.UpdateBotChatBoost{Qts: 56, Peer: &tg.PeerChat{ChatID: 700}},
+		&tg.UpdateBotMessageReaction{Qts: 57, Peer: &tg.PeerChat{ChatID: 700}},
+		&tg.UpdateBotMessageReactions{Qts: 58, Peer: &tg.PeerChat{ChatID: 700}},
+		&tg.UpdateBotBusinessConnect{Qts: 59},
+		&tg.UpdateBotNewBusinessMessage{Qts: 60},
+		&tg.UpdateBotEditBusinessMessage{Qts: 61},
+		&tg.UpdateBotDeleteBusinessMessage{Qts: 62},
+		&tg.UpdateBotPurchasedPaidMedia{Qts: 63, UserID: 7},
+		&tg.UpdateBotStarsSubscription{Qts: 64, UserID: 8},
+	}
+	for _, u := range qtsUpdates {
+		wrapper := &tg.Updates{Updates: []tg.UpdateClass{u}}
+		require.NoError(t, c.handleUpdates(ctx, wrapper))
+	}
+
+	// 4. Exercise Channel PTS variants
+	const chID = int64(9999)
+	initChUpd := &tg.Updates{
+		Chats: []tg.ChatClass{
+			&tg.Channel{ID: chID, AccessHash: 12345, Title: "Channel9999"},
+		},
+		Updates: []tg.UpdateClass{
+			&tg.UpdateNewChannelMessage{
+				Message:  &tg.Message{ID: 1, PeerID: &tg.PeerChannel{ChannelID: chID}},
+				Pts:      200,
+				PtsCount: 1,
+			},
+		},
+	}
+	require.NoError(t, c.handleUpdates(ctx, initChUpd))
+
+	channelPtsUpdates := []tg.UpdateClass{
+		&tg.UpdateEditChannelMessage{
+			Message:  &tg.Message{ID: 2, PeerID: &tg.PeerChannel{ChannelID: chID}},
+			Pts:      201,
+			PtsCount: 1,
+		},
+		&tg.UpdateDeleteChannelMessages{
+			ChannelID: chID,
+			Messages:  []int{1},
+			Pts:       202,
+			PtsCount:  1,
+		},
+		&tg.UpdatePinnedChannelMessages{
+			ChannelID: chID,
+			Messages:  []int{2},
+			Pts:       203,
+			PtsCount:  1,
+		},
+	}
+	for _, u := range channelPtsUpdates {
+		wrapper := &tg.Updates{Updates: []tg.UpdateClass{u}}
+		require.NoError(t, c.handleUpdates(ctx, wrapper))
+	}
+
+	// 5. Short updates and synthetic conversion pathways
+	c.self.Store(&tg.User{ID: 42})
+	c.sentMsgPeers.Store(55, &tg.PeerChat{ChatID: 700})
+
+	require.NoError(t, c.handleUpdates(ctx, &tg.UpdateShortMessage{
+		ID:        110,
+		UserID:    12,
+		Message:   "short user message",
+		Pts:       109,
+		PtsCount:  1,
+		Date:      1700000001,
+		Entities:  []tg.MessageEntityClass{&tg.MessageEntityBold{Length: 5}},
+		ReplyTo:   &tg.MessageReplyHeader{ReplyToMsgID: 100},
+		ViaBotID:  99,
+		TTLPeriod: 60,
+	}))
+
+	require.NoError(t, c.handleUpdates(ctx, &tg.UpdateShortChatMessage{
+		ID:        111,
+		FromID:    12,
+		ChatID:    700,
+		Message:   "short chat message",
+		Pts:       110,
+		PtsCount:  1,
+		Date:      1700000002,
+		Entities:  []tg.MessageEntityClass{&tg.MessageEntityItalic{Length: 5}},
+		ReplyTo:   &tg.MessageReplyHeader{ReplyToMsgID: 100},
+		ViaBotID:  99,
+		TTLPeriod: 60,
+	}))
+
+	require.NoError(t, c.handleUpdates(ctx, &tg.UpdateShortSentMessage{
+		ID:       55,
+		Pts:      111,
+		PtsCount: 1,
+		Date:     1700000003,
+	}))
+
+	require.NoError(t, c.handleUpdates(ctx, &tg.UpdateShort{
+		Update: &tg.UpdateDeleteMessages{Messages: []int{110}, Pts: 112, PtsCount: 1},
+		Date:   1700000004,
+	}))
+
+	require.NoError(t, c.handleUpdates(ctx, &tg.UpdatesCombined{
+		Updates: []tg.UpdateClass{
+			&tg.UpdateBotCallbackQuery{QueryID: 99, Peer: &tg.PeerChat{ChatID: 700}, UserID: 12},
+			&tg.UpdateBotInlineQuery{QueryID: 100, UserID: 12, Query: "test"},
+			&tg.UpdateChatParticipant{ChatID: 700, UserID: 12},
+			&tg.UpdatePendingJoinRequests{Peer: &tg.PeerChat{ChatID: 700}},
+		},
+		Date: 1700000005,
+		Seq:  10,
+	}))
+
+	assert.Eventually(t, func() bool {
+		return editedMsgCalled.Load() &&
+			deletedMsgCalled.Load() &&
+			callbackCalled.Load() &&
+			inlineCalled.Load() &&
+			chatMemberCalled.Load() &&
+			joinRequestCalled.Load()
+	}, 4*time.Second, 20*time.Millisecond)
+
+	assert.Equal(t, int32(112), c.stateVector.PTS())
+	assert.Equal(t, int32(64), c.stateVector.QTS())
+	val, ok := c.channelPTS.Load(chID)
+	require.True(t, ok)
+	assert.Equal(t, int32(203), val.(int32))
+}
+
+// [INSERT-AFTER] Place directly AFTER `TestPipeline_PolymorphicUpdates_CoverageBooster`.
+// [ANCHOR] 	assert.Equal(t, int32(203), val.(int32))
+// [ANCHOR] }
+// [WHY] Validates fault injection pathways during sync: PERSISTENT_TIMESTAMP_INVALID purge, canceled context handling, and transient network error recovery.
+
+type mockFaultDiffInvoker struct {
+	mu           sync.Mutex
+	calls        int
+	injectedErr  error
+	stateInvoked atomic.Bool
+	dialogsCalls atomic.Int64
+}
+
+func (m *mockFaultDiffInvoker) Invoke(_ context.Context, _ bin.Encoder, out bin.Decoder) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	switch box := out.(type) {
+	case *tg.UpdatesDifferenceBox:
+		m.calls++
+		if m.injectedErr != nil {
+			return m.injectedErr
+		}
+		box.Difference = &tg.UpdatesDifferenceEmpty{Date: 1700000000, Seq: 10}
+		return nil
+	case *tg.UpdatesState:
+		m.stateInvoked.Store(true)
+		*box = tg.UpdatesState{
+			Pts:  200,
+			Qts:  20,
+			Date: 1700000000,
+			Seq:  10,
+		}
+		return nil
+	case *tg.MessagesDialogsBox:
+		m.dialogsCalls.Inc()
+		box.Dialogs = &tg.MessagesDialogs{}
+		return nil
+	case *tg.MessagesMessagesBox:
+		box.Messages = &tg.MessagesMessages{}
+		return nil
+	}
+	return nil
+}
+
+func TestPipeline_FaultInjection_GetDifferenceErrors(t *testing.T) {
+	t.Parallel()
+
+	dir := filepath.Join(t.TempDir(), "fault_diff_test")
+	c, err := New(dir,
+		WithAppID(123),
+		WithAppHash("deadbeef"),
+		WithAutoPeerCaching(false),
+	)
+	require.NoError(t, err)
+	defer func() { _ = c.Close() }()
+
+	ctx := t.Context()
+	c.dispatcher.Start(ctx)
+
+	// 1. Fault injection: PERSISTENT_TIMESTAMP_INVALID must purge postponed updates and trigger handleUpdatesTooLong
+	faultInvoker := &mockFaultDiffInvoker{
+		injectedErr: tgerr.New(400, "PERSISTENT_TIMESTAMP_INVALID"),
+	}
+	c.api = tg.NewClient(faultInvoker)
+
+	c.diffFetcher = syncstate.NewDifferenceFetcher(
+		c.api,
+		c.stateVector,
+		c.flusher,
+		c.gapBuffer,
+		func() {
+			c.handleUpdatesTooLong(context.Background())
+		},
+	)
+
+	c.postponedMu.Lock()
+	c.postponedUpdates = append(c.postponedUpdates, &tg.Updates{})
+	c.postponedMu.Unlock()
+
+	c.triggerResync()
+
+	assert.Eventually(t, func() bool {
+		c.postponedMu.Lock()
+		empty := len(c.postponedUpdates) == 0
+		c.postponedMu.Unlock()
+		return empty && faultInvoker.stateInvoked.Load()
+	}, 4*time.Second, 20*time.Millisecond)
+
+	// 2. Cancellation: Context cancellation during diff fetch must return without panic
+	cancelCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err = c.diffFetcher.FetchDifference(cancelCtx, func(_ syncstate.DifferenceBatch) error { return nil })
+	require.ErrorIs(t, err, context.Canceled)
+
+	// 3. Transient network error: Schedules retry without state vector reset
+	c.isFetchingDiff.Store(false)
+	faultInvoker.mu.Lock()
+	faultInvoker.injectedErr = errors.New("connection reset by peer")
+	faultInvoker.mu.Unlock()
+
+	c.triggerResync()
+	assert.Eventually(t, func() bool {
+		return !c.isFetchingDiff.Load()
+	}, 2*time.Second, 10*time.Millisecond)
+}
+
+// [INSERT-AFTER] Place directly AFTER `TestPipeline_FaultInjection_GetDifferenceErrors`.
+// [ANCHOR] 	assert.Eventually(t, func() bool {
+// [ANCHOR] 		return !c.isFetchingDiff.Load()
+// [ANCHOR] 	}, 2*time.Second, 10*time.Millisecond)
+// [ANCHOR] }
+// [WHY] Verifies recoverHistoryViaGetHistory restores user and basic group dialogs, parses MessagesDialogsSlice, and sets dialog recovery flags.
+
+type mockMultiPeerDialogInvoker struct {
+	mu           sync.Mutex
+	userHistory  int
+	chatHistory  int
+	chHistory    int
+	dialogsCalls int
+}
+
+func (m *mockMultiPeerDialogInvoker) Invoke(_ context.Context, in bin.Encoder, out bin.Decoder) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	switch box := out.(type) {
+	case *tg.MessagesDialogsBox:
+		m.dialogsCalls++
+		box.Dialogs = &tg.MessagesDialogsSlice{
+			Count: 3,
+			Dialogs: []tg.DialogClass{
+				&tg.Dialog{
+					Peer: &tg.PeerUser{UserID: 1001},
+					Pts:  50,
+				},
+				&tg.Dialog{
+					Peer: &tg.PeerChat{ChatID: 2002},
+					Pts:  60,
+				},
+				&tg.Dialog{
+					Peer: &tg.PeerChannel{ChannelID: 3003},
+					Pts:  70,
+				},
+				&tg.DialogFolder{}, // Ignored: !ok branch
+				&tg.Dialog{
+					Peer: &tg.PeerUser{UserID: 9999},
+					Pts:  0, // Ignored: d.Pts == 0 branch
+				},
+			},
+			Chats: []tg.ChatClass{
+				&tg.Channel{ID: 3003, AccessHash: 9988, Title: "Channel3003"},
+			},
+		}
+		return nil
+
+	case *tg.MessagesMessagesBox:
+		req, ok := in.(*tg.MessagesGetHistoryRequest)
+		if ok {
+			switch p := req.Peer.(type) {
+			case *tg.InputPeerUser:
+				m.userHistory++
+				box.Messages = &tg.MessagesMessagesSlice{
+					Messages: []tg.MessageClass{
+						&tg.Message{ID: 11, Message: "user msg 1", PeerID: &tg.PeerUser{UserID: p.UserID}},
+						&tg.Message{ID: 12, Message: "user msg 2", PeerID: &tg.PeerUser{UserID: p.UserID}},
+					},
+				}
+				return nil
+			case *tg.InputPeerChat:
+				m.chatHistory++
+				box.Messages = &tg.MessagesMessages{
+					Messages: []tg.MessageClass{
+						&tg.Message{ID: 21, Message: "chat msg 1", PeerID: &tg.PeerChat{ChatID: p.ChatID}},
+					},
+				}
+				return nil
+			case *tg.InputPeerChannel:
+				m.chHistory++
+				box.Messages = &tg.MessagesChannelMessages{
+					Messages: []tg.MessageClass{
+						&tg.Message{ID: 31, Message: "channel msg 1", PeerID: &tg.PeerChannel{ChannelID: p.ChannelID}},
+					},
+				}
+				return nil
+			}
+		}
+		box.Messages = &tg.MessagesMessages{}
+		return nil
+	}
+	return nil
+}
+
+func TestPipeline_RecoverHistory_UserAndChatDialogs(t *testing.T) {
+	t.Parallel()
+
+	dir := filepath.Join(t.TempDir(), "multipeer_recovery")
+	c, err := New(dir,
+		WithAppID(123),
+		WithAppHash("deadbeef"),
+		WithAutoPeerCaching(false),
+	)
+	require.NoError(t, err)
+	defer func() { _ = c.Close() }()
+
+	ctx := t.Context()
+	c.dispatcher.Start(ctx)
+
+	var (
+		mu           sync.Mutex
+		receivedMsgs []string
+	)
+
+	c.OnMessage(func(_ *Context, _ *Update) bool { return true }, func(_ *Context, upd *Update) error {
+		mu.Lock()
+		defer mu.Unlock()
+		if upd != nil && upd.Message != nil {
+			receivedMsgs = append(receivedMsgs, upd.Message.Message)
+		}
+		return nil
+	})
+
+	invoker := &mockMultiPeerDialogInvoker{}
+	c.api = tg.NewClient(invoker)
+
+	c.recoverHistoryViaGetHistory(ctx)
+
+	assert.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(receivedMsgs) == 4
+	}, 3*time.Second, 20*time.Millisecond)
+
+	mu.Lock()
+	assert.Contains(t, receivedMsgs, "user msg 1")
+	assert.Contains(t, receivedMsgs, "chat msg 1")
+	assert.Contains(t, receivedMsgs, "channel msg 1")
+	mu.Unlock()
+
+	// Verify all 3 peer dialogs were marked as incomplete/not loaded in storage
+	clientID := c.accountID()
+	userNotLoaded, err := c.stateStorage.IsDialogNotLoaded(ctx, clientID, 1001)
+	require.NoError(t, err)
+	assert.True(t, userNotLoaded)
+
+	chatNotLoaded, err := c.stateStorage.IsDialogNotLoaded(ctx, clientID, 2002)
+	require.NoError(t, err)
+	assert.True(t, chatNotLoaded)
+
+	chNotLoaded, err := c.stateStorage.IsDialogNotLoaded(ctx, clientID, 3003)
+	require.NoError(t, err)
+	assert.True(t, chNotLoaded)
+}
+
+func TestPipeline_ChannelInaccessible_And_PostponedSaturation(t *testing.T) {
+	t.Parallel()
+
+	dir := filepath.Join(t.TempDir(), "inaccessible_and_saturation")
+	c, err := New(dir,
+		WithAppID(123),
+		WithAppHash("deadbeef"),
+		WithAutoPeerCaching(false),
+	)
+	require.NoError(t, err)
+	defer func() { _ = c.Close() }()
+
+	ctx := t.Context()
+
+	// 1. Guard check: Inaccessible channel with PTS == -1 must immediately return true
+	const inaccessibleCh = int64(7777)
+	c.channelPTS.Store(inaccessibleCh, int32(-1))
+
+	upd := &tg.UpdateNewChannelMessage{
+		Message:  &tg.Message{ID: 1, PeerID: &tg.PeerChannel{ChannelID: inaccessibleCh}},
+		Pts:      50,
+		PtsCount: 1,
+	}
+	applied := c.handleChannelPtsUpdate(ctx, upd, nil, inaccessibleCh, 50, 1)
+	assert.True(t, applied, "Inaccessible channel must return true immediately to prevent sync loops")
+
+	// 2. Postponed queue saturation in handleUpdates (>10000)
+	c.isFetchingDiff.Store(true)
+	c.postponedMu.Lock()
+	c.postponedUpdates = make([]tg.UpdatesClass, 10000)
+	c.postponedMu.Unlock()
+
+	fakeUpd := &tg.Updates{
+		Updates: []tg.UpdateClass{
+			&tg.UpdateNewMessage{
+				Message:  &tg.Message{ID: 999, PeerID: &tg.PeerChat{ChatID: 100}},
+				Pts:      300,
+				PtsCount: 1,
+			},
+		},
+	}
+	err = c.handleUpdates(ctx, fakeUpd)
+	require.NoError(t, err)
+
+	c.postponedMu.Lock()
+	assert.Nil(t, c.postponedUpdates, "Saturated queue must be purged")
+	c.postponedMu.Unlock()
+	assert.False(t, c.isFetchingDiff.Load(), "isFetchingDiff must be reset upon saturation purge")
+
+	// 3. Postponed queue saturation in handleGlobalPtsUpdate (>10000)
+	c.isFetchingDiff.Store(true)
+	c.postponedMu.Lock()
+	c.postponedUpdates = make([]tg.UpdatesClass, 10000)
+	c.postponedMu.Unlock()
+
+	handled := c.handleGlobalPtsUpdate(ctx, fakeUpd.Updates[0], nil, FastMetadata{}, 301, 1, false)
+	assert.False(t, handled)
+
+	c.postponedMu.Lock()
+	assert.Nil(t, c.postponedUpdates, "handleGlobalPtsUpdate must purge queue on saturation")
+	c.postponedMu.Unlock()
+	assert.False(t, c.isFetchingDiff.Load())
+}
+
+func TestPipeline_Disruptor_MultiProducerSaturationStress(t *testing.T) {
+	t.Parallel()
+
+	dir := filepath.Join(t.TempDir(), "disruptor_saturation")
+	c, err := New(dir,
+		WithAppID(123),
+		WithAppHash("deadbeef"),
+		WithAutoPeerCaching(false),
+	)
+	require.NoError(t, err)
+	defer func() { _ = c.Close() }()
+
+	ctx := t.Context()
+	c.dispatcher.Start(ctx)
+	go c.startDisruptorConsumer(ctx)
+
+	const producers = 20
+	const msgsPerProducer = 200
+	const expectedTotal = producers * msgsPerProducer
+
+	var receivedCount atomic.Int64
+	c.OnMessage(func(_ *Context, _ *Update) bool { return true }, func(_ *Context, _ *Update) error {
+		receivedCount.Inc()
+		return nil
+	})
+
+	var wg sync.WaitGroup
+	wg.Add(producers)
+
+	for p := range producers {
+		producerID := int64(p + 1)
+		go func(pid int64) {
+			defer wg.Done()
+			for m := range msgsPerProducer {
+				upd := &tg.Updates{
+					Updates: []tg.UpdateClass{
+						&tg.UpdateNewMessage{
+							Message: &tg.Message{
+								ID:      m + 1,
+								Message: fmt.Sprintf("p_%d_m_%d", pid, m),
+								PeerID:  &tg.PeerChat{ChatID: 8000 + pid},
+								FromID:  &tg.PeerUser{UserID: 42},
+							},
+						},
+					},
+				}
+				for !c.sequencer.Enqueue(upd, [16]byte{byte(pid), byte(m)}, 8000+pid) {
+					time.Sleep(20 * time.Microsecond)
+				}
+			}
+		}(producerID)
+	}
+
+	wg.Wait()
+
+	assert.Eventually(t, func() bool {
+		return receivedCount.Load() == int64(expectedTotal)
+	}, 6*time.Second, 25*time.Millisecond)
+
+	assert.Equal(t, int64(expectedTotal), receivedCount.Load(), "All concurrently published updates must be processed without loss")
+}
+
+func TestPipeline_ChannelPool_ConcurrentWorkerDrain(t *testing.T) {
+	t.Parallel()
+
+	api := &mockPipelineChannelAPI{
+		responses: make(map[int64][]tg.UpdatesChannelDifferenceClass),
+	}
+
+	const totalChannels = 150
+	for i := 1; i <= totalChannels; i++ {
+		api.setResponse(int64(i), &tg.UpdatesChannelDifference{Pts: 500, Final: true})
+	}
+
+	var processedCount atomic.Int64
+	var activeGoroutines atomic.Int32
+	var maxActiveObserved atomic.Int32
+
+	pool := channelpool.NewWorkerPool(
+		api,
+		channelpool.MinConcurrency,
+		func(batch channelpool.ChannelDifferenceBatch) error {
+			curr := activeGoroutines.Inc()
+			if curr > maxActiveObserved.Load() {
+				maxActiveObserved.Store(curr)
+			}
+			time.Sleep(1 * time.Millisecond)
+			activeGoroutines.Dec()
+			processedCount.Inc()
+			return nil
+		},
+		nil,
+		nil,
+	)
+
+	ctx := t.Context()
+	pool.Start(ctx)
+
+	var wg sync.WaitGroup
+	wg.Add(totalChannels)
+
+	now := time.Now()
+	for i := 1; i <= totalChannels; i++ {
+		chID := int64(i)
+		go func(id int64) {
+			defer wg.Done()
+			task := &channelpool.ChannelSyncTask{
+				ChannelID: id,
+				LocalPTS:  10,
+				RemotePTS: 500,
+				Tier:      channelpool.TierBacklog,
+			}
+			// Inject delayed retry for a subset to test PopReady wait calculations
+			if id%10 == 0 {
+				task.NextAllowedAt = now.Add(20 * time.Millisecond)
+			}
+			pool.Submit(task)
+		}(chID)
+	}
+
+	wg.Wait()
+
+	assert.Eventually(t, func() bool {
+		return processedCount.Load() == int64(totalChannels)
+	}, 6*time.Second, 20*time.Millisecond)
+
+	assert.LessOrEqual(t, maxActiveObserved.Load(), int32(channelpool.MaxConcurrency))
+	pool.Stop()
+}
+
+func TestPipeline_EdgeBranches_FileTransfer_And_Mentions(t *testing.T) {
+	t.Parallel()
+
+	dir := filepath.Join(t.TempDir(), "edge_branches_test")
+	c, err := New(dir,
+		WithAppID(123),
+		WithAppHash("deadbeef"),
+		WithAutoPeerCaching(false),
+	)
+	require.NoError(t, err)
+
+	ctx := t.Context()
+
+	// 1. Uninitialized engine guards on file transfer
+	uninitializedClient := &Client{}
+	_, errUpload := uninitializedClient.UploadFile(ctx, "test.bin", nil, 100)
+	require.ErrorContains(t, errUpload, "engine not initialized")
+
+	_, errDownload := uninitializedClient.DownloadFile(ctx, &tg.InputDocumentFileLocation{}, nil)
+	require.ErrorContains(t, errDownload, "engine not initialized")
+
+	// 2. Canceled context guards on file transfer
+	canceledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, errUploadCanceled := c.UploadFile(canceledCtx, "test.bin", nil, 100)
+	require.ErrorContains(t, errUploadCanceled, "upload file canceled")
+
+	_, errDownloadCanceled := c.DownloadFile(canceledCtx, &tg.InputDocumentFileLocation{}, nil)
+	require.ErrorContains(t, errDownloadCanceled, "download file canceled")
+
+	// 3. Bot mention stripping coverage
+	c.self.Store(&tg.User{Username: "testbot"})
+
+	stripped, changed := c.stripBotMention("/start@testbot payload")
+	assert.True(t, changed)
+	assert.Equal(t, "/start payload", stripped)
+
+	// Mismatched username mention must not strip
+	unaltered, changedMismatch := c.stripBotMention("/start@otherbot payload")
+	assert.False(t, changedMismatch)
+	assert.Equal(t, "/start@otherbot payload", unaltered)
+
+	// Non-command string must not strip
+	plain, changedPlain := c.stripBotMention("regular text")
+	assert.False(t, changedPlain)
+	assert.Equal(t, "regular text", plain)
+
+	// 4. OnChatMigrateTo registration contract
+	assert.NotPanics(t, func() {
+		c.OnChatMigrateTo(func(_ *Context, _ *Update) error {
+			return nil
+		})
+	})
+
+	// 5. Channel access hash resolution fallback via sync.Map and peer storage
+	const knownChannelID = int64(445566)
+	c.channelAccessHashes.Store(knownChannelID, int64(888999))
+	resolvedHash := c.resolveChannelAccessHash(ctx, knownChannelID, nil)
+	assert.Equal(t, int64(888999), resolvedHash)
+
+	// 6. Close error joining verification
+	require.NoError(t, c.Close())
+}
+
+func BenchmarkPipeline_Disruptor_IngressThroughput(b *testing.B) {
+	ring, err := disruptor.NewRingBuffer(disruptor.DefaultCapacity)
+	if err != nil {
+		b.Fatal(err)
+	}
+	seq := disruptor.NewSequencer(ring, nil)
+
+	var ctx, cancel = context.WithCancel(context.Background())
+	defer cancel()
+
+	poller := disruptor.NewSingleConsumerPoller(ring, 10*time.Microsecond)
+	go func() {
+		_ = poller.Run(ctx, func(_ *disruptor.RingSlot) error {
+			return nil
+		})
+	}()
+
+	rawUpdate := &tg.Updates{}
+	trace := [16]byte{'b', 'e', 'n', 'c', 'h'}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	b.RunParallel(func(pb *testing.PB) {
+		clientID := int64(1)
+		for pb.Next() {
+			for !seq.Enqueue(rawUpdate, trace, clientID) {
+				runtime.Gosched()
+			}
+		}
+	})
+}
+
+func BenchmarkPipeline_ContextPool_AcquireRelease(b *testing.B) {
+	pool := NewContextPool()
+	parent := context.Background()
+	meta := FastMetadata{
+		TraceID:  [16]byte{'b', 'e', 'n', 'c', 'h'},
+		ClientID: 42,
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		ctx := pool.Acquire(parent, meta)
+		ctx.Release()
+	}
+}
+
+func BenchmarkPipeline_ChannelPool_PriorityHeap(b *testing.B) {
+	pq := channelpool.NewPriorityQueue()
+	now := time.Now()
+
+	for i := 1; i <= 500; i++ {
+		pq.PushOrUpdate(&channelpool.ChannelSyncTask{
+			ChannelID:  int64(i),
+			LocalPTS:   10,
+			RemotePTS:  int32(10 + (i % 50)),
+			Tier:       channelpool.TierBacklog,
+			EnqueuedAt: now,
+		})
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		taskID := int64((i % 1000) + 1)
+		pq.PushOrUpdate(&channelpool.ChannelSyncTask{
+			ChannelID:  taskID,
+			LocalPTS:   10,
+			RemotePTS:  int32(50 + (i % 200)),
+			Tier:       channelpool.TierActive,
+			EnqueuedAt: now,
+		})
+		if task, ok := pq.Pop(); ok && task != nil {
+			_ = task.Score(now)
+		}
+	}
+}
+
+func BenchmarkPipeline_ShardedDispatcher_Routing(b *testing.B) {
+	hashFunc := func(_ *Context, upd *Update) uint64 {
+		return uint64(upd.ChatID())
+	}
+	kindFunc := func(_ *Context, upd *Update) int {
+		return int(upd.Kind)
+	}
+
+	disp := dispatcher.NewDispatcher[*Context, *Update](
+		8,
+		1024,
+		hashFunc,
+		kindFunc,
+		nil,
+	)
+
+	disp.AddRoute(int(KindMessage), func(_ *Context, _ *Update) bool { return true }, func(_ *Context, _ *Update) error {
+		return nil
+	}, nil, 0)
+
+	ctx := b.Context()
+	disp.Start(ctx)
+
+	upd := &Update{
+		Kind:    KindMessage,
+		Message: &tg.Message{ID: 1, PeerID: &tg.PeerChat{ChatID: 100}},
+	}
+	pCtx := &Context{Update: upd}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		disp.Handle(pCtx, upd)
+	}
+}
+
+type dummyPlugin struct{}
+
+func (dummyPlugin) Register(r Registrar) error {
+	r.OnCommand("/test_plugin", func(_ *Context, _ *Update) error { return nil })
+	return nil
+}
+
+type dummyController struct{}
+
+func (dummyController) RegisterRoutes(r Registrar) error {
+	r.OnMessage(func(_ *Context, _ *Update) bool { return true }, func(_ *Context, _ *Update) error { return nil })
+	return nil
+}
+
+func TestPipeline_ClientOptions_And_AuxiliaryCoverage(t *testing.T) {
+	t.Parallel()
+
+	dir := filepath.Join(t.TempDir(), "aux_coverage_client")
+	var observedTraffic atomic.Bool
+	var tooLongInvoked atomic.Bool
+
+	c, err := New(dir,
+		WithAppID(123),
+		WithAppHash("deadbeef"),
+		WithWorkers(4),
+		WithLogger(slog.Default()),
+		WithAutoPeerCaching(false),
+		WithTrafficObserver(func() { observedTraffic.Store(true) }),
+		WithOnTooLong(func() { tooLongInvoked.Store(true) }),
+		WithProxy("socks5://127.0.0.1:1080", false),
+		WithSOCKS5("127.0.0.1:1080", "user", "pass", false),
+		WithHTTPProxy("127.0.0.1:8080", "user", "pass", false),
+	)
+	require.NoError(t, err)
+	defer func() { _ = c.Close() }()
+
+	ctx := t.Context()
+
+	// 1. Service singletons and accessors
+	assert.NotNil(t, c.Chat())
+	assert.NotNil(t, c.Admin())
+	assert.NotNil(t, c.State())
+
+	// 2. Plugins and Controller interfaces
+	require.NoError(t, c.Install(dummyPlugin{}))
+	require.NoError(t, c.RegisterController(dummyController{}))
+	require.NoError(t, RegisterControllers(c, ControllerFunc(func(r Registrar) error {
+		r.OnCommand("/controller_func", func(_ *Context, _ *Update) error { return nil })
+		return nil
+	})))
+
+	// 3. Storage adapter direct tests (SetDialogNotLoaded & IsDialogNotLoaded)
+	dbPath := filepath.Join(t.TempDir(), "storage_adapter_aux.db")
+	stateStore, closer, err := tgboxstorage.NewDefaultStateStorage(dbPath)
+	require.NoError(t, err)
+	defer func() { _ = closer.Close() }()
+
+	const clientID = int64(777111)
+	const dialogID = int64(888222)
+
+	require.NoError(t, stateStore.SetDialogNotLoaded(ctx, clientID, dialogID, true))
+	notLoaded, err := stateStore.IsDialogNotLoaded(ctx, clientID, dialogID)
+	require.NoError(t, err)
+	assert.True(t, notLoaded)
+
+	require.NoError(t, stateStore.SetDialogNotLoaded(ctx, clientID, dialogID, false))
+	notLoadedAfter, err := stateStore.IsDialogNotLoaded(ctx, clientID, dialogID)
+	require.NoError(t, err)
+	assert.False(t, notLoadedAfter)
+
+	// 4. Traffic observer invocation
+	c.opts.trafficObserver()
+	assert.True(t, observedTraffic.Load())
 }
