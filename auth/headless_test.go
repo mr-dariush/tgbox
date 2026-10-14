@@ -3,6 +3,7 @@ package auth_test
 import (
 	"context"
 	"crypto/rand"
+	"encoding/hex"
 	"testing"
 	"time"
 
@@ -201,6 +202,25 @@ func TestHeadlessFSM_2FA_Password_Lifecycle(t *testing.T) {
 		actionsCh <- tgboxauth.Action{SessionID: sessID, Value: "wrong-pass-1"}
 		actionsCh <- tgboxauth.Action{SessionID: sessID, Value: "wrong-pass-2"}
 
+		// Telegram's 2048-bit safe prime, also used by gotd's SRP tests.
+		prime, err := hex.DecodeString(
+			"C71CAEB9C6B1C9048E6C522F70F13F73980D40238E3E21C14934D037563D930F" +
+				"48198A0AA7C14058229493D22530F4DBFA336F6E0AC925139543AED44CCE7C37" +
+				"20FD51F69458705AC68CD4FE6B6B13ABDC9746512969328454F18FAF8C595F64" +
+				"2477FE96BB2A941D5BCD1D4AC8CC49880708FA9B378E3C4F3A9060BEE67CF9A4" +
+				"A4A695811051907E162753B56B0F6B410DBA74D8A84B2A14B3144E0EF1284754" +
+				"FD17ED950D5965B4B9DD46582DB1178D169C6BC465B0D6FF9CA3928FEF5B9AE4" +
+				"E418FC15E83EBEA0F87FA9FF5EED70050DED2849F47BF959D956850CE929851F" +
+				"0D8115F635B105EE2E4E15D04B2454BF6F4FADF034B10403119CD8E3B92FCC5B",
+		)
+		require.NoError(t, err)
+		srpB := make([]byte, 256)
+		srpB[0] = 0x80 // A server value within the safe range of the prime.
+		secureRandom := make([]byte, 256)
+		_, err = rand.Read(secureRandom)
+		require.NoError(t, err)
+		var passwordChecks int
+
 		invoker := &mockInvoker{
 			invokeFunc: func(_ context.Context, input bin.Encoder, output bin.Decoder) error {
 				switch input.(type) {
@@ -209,8 +229,27 @@ func TestHeadlessFSM_2FA_Password_Lifecycle(t *testing.T) {
 					return nil
 				case *tg.AuthSignInRequest:
 					return tgerr.New(400, "SESSION_PASSWORD_NEEDED")
-				default:
+				case *tg.AccountGetPasswordRequest:
+					out := output.(*tg.AccountPassword)
+					*out = tg.AccountPassword{
+						HasPassword: true,
+						CurrentAlgo: &tg.PasswordKdfAlgoSHA256SHA256PBKDF2HMACSHA512iter100000SHA256ModPow{
+							Salt1: []byte("salt-1"),
+							Salt2: []byte("salt-2"),
+							G:     3,
+							P:     prime,
+						},
+						SRPID:        1,
+						SRPB:         srpB,
+						SecureRandom: secureRandom,
+					}
+					return nil
+				case *tg.AuthCheckPasswordRequest:
+					passwordChecks++
 					return tgerr.New(400, "PASSWORD_HASH_INVALID")
+				default:
+					t.Fatalf("unexpected auth request: %T", input)
+					return nil
 				}
 			},
 		}
@@ -222,8 +261,9 @@ func TestHeadlessFSM_2FA_Password_Lifecycle(t *testing.T) {
 			tgboxauth.WithMaxRetries(2),
 		)
 
-		err := fsm.Authenticate(context.Background(), authClient, "+1234567890")
+		err = fsm.Authenticate(context.Background(), authClient, "+1234567890")
 		require.ErrorIs(t, err, tgboxauth.ErrMaxRetriesPassword)
+		assert.Equal(t, 2, passwordChecks)
 	})
 
 	t.Run("Password fatal failure", func(t *testing.T) {
