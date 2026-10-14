@@ -63,6 +63,7 @@ func TestShard_LoadShedding(t *testing.T) {
 
 	// Bounded queue with exactly 1 buffer slot
 	shard := dispatcher.NewShard[int, string](1, nil, handle)
+	shard.SetMaxElasticCapacity(0)
 	shard.Start(ctx)
 
 	// 1st message goes straight to the active worker and blocks it

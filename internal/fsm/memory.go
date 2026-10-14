@@ -92,6 +92,23 @@ func (m *MemoryStorage) Delete(_ context.Context, key string) error {
 	return nil
 }
 
+// Move atomically renames a state key from oldKey to newKey preserving its TTL.
+func (m *MemoryStorage) Move(_ context.Context, oldKey, newKey string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if entry, ok := m.data[oldKey]; ok {
+		if !entry.expiresAt.IsZero() && time.Now().After(entry.expiresAt) {
+			delete(m.data, oldKey)
+			return ErrNotFound
+		}
+		m.data[newKey] = entry
+		delete(m.data, oldKey)
+		return nil
+	}
+	return ErrNotFound
+}
+
 // startReaper launches the periodic background garbage collection routine.
 func (m *MemoryStorage) startReaper(ctx context.Context, interval time.Duration) {
 	go func() {

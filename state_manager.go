@@ -61,6 +61,18 @@ func (s *defaultStateManager) ClearState(ctx context.Context, chatID, userID int
 	return s.storage.Delete(ctx, fsmKey(chatID, userID))
 }
 
+// MoveState atomically transfers the conversational state from an old chat/user pair to a new one.
+func (s *defaultStateManager) MoveState(ctx context.Context, oldChatID, oldUserID, newChatID, newUserID int64) error {
+	if s == nil || s.storage == nil {
+		return ErrFSMNotConfigured
+	}
+	if oldChatID == 0 || oldUserID == 0 || newChatID == 0 || newUserID == 0 {
+		return ErrInvalidFSMContext
+	}
+
+	return s.storage.Move(ctx, fsmKey(oldChatID, oldUserID), fsmKey(newChatID, newUserID))
+}
+
 // WatchExpired attaches a reactive expiration listener if the underlying storage implements fsm.ExpirationWatcher.
 // It parses expired keys into chatID and userID before invoking the provided handler.
 func (s *defaultStateManager) WatchExpired(ctx context.Context, handler func(chatID, userID int64)) error {

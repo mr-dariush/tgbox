@@ -12,6 +12,8 @@ import (
 	runtimepprof "runtime/pprof"
 	"sync"
 	"time"
+
+	"github.com/mr-dariush/tgbox/internal/telemetry"
 )
 
 const (
@@ -39,20 +41,24 @@ type ProfilerConfig struct {
 
 	// OnLeakDetected is an optional callback triggered when GC-reachability analysis detects permanently leaked goroutines.
 	OnLeakDetected func(count int)
+
+	// SyncMetrics represents the optional telemetry tracker for ring buffer and state synchronization metrics.
+	SyncMetrics *telemetry.SyncMetrics
 }
 
-// Profiler monitors runtime health, detects goroutine leaks, and exposes pprof endpoints.
+// Profiler monitors runtime health, detects goroutine leaks, and exposes pprof and Prometheus endpoints.
 // It implements io.Closer for clean teardown.
 type Profiler struct {
 	cfg       ProfilerConfig
 	logger    *slog.Logger
 	server    *http.Server
 	listener  net.Listener
+	metrics   *telemetry.SyncMetrics
 	done      chan struct{}
 	closeOnce sync.Once
 }
 
-// NewProfiler instantiates and launches the profiler engine and background watchdog.
+// NewProfiler instantiates and launches the profiler engine, metrics tracker, and background watchdog.
 func NewProfiler(cfg ProfilerConfig, logger *slog.Logger) *Profiler {
 	if logger == nil {
 		logger = slog.Default()
@@ -63,11 +69,15 @@ func NewProfiler(cfg ProfilerConfig, logger *slog.Logger) *Profiler {
 	if cfg.GoroutineThreshold <= 0 {
 		cfg.GoroutineThreshold = defaultProfilerGoroutineThreshold
 	}
+	if cfg.SyncMetrics == nil {
+		cfg.SyncMetrics = telemetry.NewSyncMetrics()
+	}
 
 	p := &Profiler{
-		cfg:    cfg,
-		logger: logger,
-		done:   make(chan struct{}),
+		cfg:     cfg,
+		logger:  logger,
+		metrics: cfg.SyncMetrics,
+		done:    make(chan struct{}),
 	}
 
 	if cfg.HTTPAddr != "" {
@@ -88,6 +98,7 @@ func (p *Profiler) startHTTPServer(addr string) error {
 	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
 	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
 	mux.Handle("/debug/pprof/goroutineleak", pprof.Handler("goroutineleak"))
+	mux.Handle("/metrics", p.metrics.Handler())
 
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -157,6 +168,11 @@ func (p *Profiler) Addr() string {
 		return p.listener.Addr().String()
 	}
 	return ""
+}
+
+// Metrics returns the active sync telemetry metrics tracker.
+func (p *Profiler) Metrics() *telemetry.SyncMetrics {
+	return p.metrics
 }
 
 // NumGoroutine returns the current number of active goroutines.

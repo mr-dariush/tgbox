@@ -72,3 +72,41 @@ func TestMemoryStorage_BackgroundReaper(t *testing.T) {
 	_, err = store.Get(ctx, "user:9999:state")
 	assert.ErrorIs(t, err, fsm.ErrNotFound)
 }
+
+func TestMemoryStorage_Move(t *testing.T) {
+	ctx := t.Context()
+	store := fsm.NewMemoryStorage(ctx, 5*time.Minute)
+	defer func() { require.NoError(t, store.Close()) }()
+
+	// 1. Move missing source key must return ErrNotFound
+	err := store.Move(ctx, "non_existent_key", "target_key")
+	require.ErrorIs(t, err, fsm.ErrNotFound)
+
+	// 2. Move existing valid key
+	err = store.Set(ctx, "chat:100:user:1", "state_checkout", time.Hour)
+	require.NoError(t, err)
+
+	err = store.Move(ctx, "chat:100:user:1", "channel:200:user:1")
+	require.NoError(t, err)
+
+	// Old key must be deleted
+	_, err = store.Get(ctx, "chat:100:user:1")
+	require.ErrorIs(t, err, fsm.ErrNotFound)
+
+	// New key must hold state
+	val, err := store.Get(ctx, "channel:200:user:1")
+	require.NoError(t, err)
+	assert.Equal(t, "state_checkout", val)
+
+	// 3. Move expired key must trigger deletion and return ErrNotFound
+	err = store.Set(ctx, "expiring_key", "state_transient", 5*time.Millisecond)
+	require.NoError(t, err)
+
+	time.Sleep(20 * time.Millisecond)
+
+	err = store.Move(ctx, "expiring_key", "target_exp_key")
+	require.ErrorIs(t, err, fsm.ErrNotFound)
+
+	_, err = store.Get(ctx, "expiring_key")
+	require.ErrorIs(t, err, fsm.ErrNotFound)
+}

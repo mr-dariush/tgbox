@@ -70,13 +70,23 @@ func TestClient_HandleUpdates_ContextPropagation(t *testing.T) {
 	c.dispatcher.Start(ctx)
 
 	handlerCalled := make(chan struct{})
-	var capturedCtx *Context
+	var (
+		capturedTraceID       string
+		capturedClientID      int64
+		hasStdCtx             bool
+		capturedFromStdTrace  string
+		capturedFromStdClient int64
+	)
 
 	c.dispatcher.AddRoute(
 		int(KindMessage),
 		func(_ *Context, _ *Update) bool { return true },
 		func(ctx *Context, _ *Update) error {
-			capturedCtx = ctx
+			capturedTraceID = ctx.TraceID()
+			capturedClientID = ctx.ClientID()
+			hasStdCtx = ctx.Context() != nil
+			capturedFromStdTrace = TraceIDFromContext(ctx.Context())
+			capturedFromStdClient = ClientIDFromContext(ctx.Context())
 			close(handlerCalled)
 			return nil
 		},
@@ -105,11 +115,11 @@ func TestClient_HandleUpdates_ContextPropagation(t *testing.T) {
 		t.Fatal("Timeout waiting for dispatcher to process the update envelope")
 	}
 
-	assert.NotEmpty(t, capturedCtx.TraceID())
-	assert.Equal(t, int64(112233), capturedCtx.ClientID())
-	assert.NotNil(t, capturedCtx.Context())
-	assert.Equal(t, capturedCtx.TraceID(), TraceIDFromContext(capturedCtx.Context()))
-	assert.Equal(t, capturedCtx.ClientID(), ClientIDFromContext(capturedCtx.Context()))
+	assert.NotEmpty(t, capturedTraceID)
+	assert.Equal(t, int64(112233), capturedClientID)
+	assert.True(t, hasStdCtx)
+	assert.Equal(t, capturedTraceID, capturedFromStdTrace)
+	assert.Equal(t, capturedClientID, capturedFromStdClient)
 }
 
 func TestClient_StatelessFSM_Routing(t *testing.T) {

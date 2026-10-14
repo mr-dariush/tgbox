@@ -43,6 +43,39 @@ func TestProfiler_Lifecycle(t *testing.T) {
 	assert.Contains(t, string(body), "Types of profiles available:")
 }
 
+func TestProfiler_MetricsEndpoint(t *testing.T) {
+	t.Parallel()
+
+	cfg := tgbox.ProfilerConfig{
+		Enabled:  true,
+		HTTPAddr: "127.0.0.1:0",
+	}
+
+	profiler := tgbox.NewProfiler(cfg, nil)
+	require.NotNil(t, profiler)
+	defer func() { require.NoError(t, profiler.Close()) }()
+
+	profiler.Metrics().RecordDroppedUpdates("buffer_full", 42)
+	profiler.Metrics().RecordResyncEvent("user")
+
+	addr := profiler.Addr()
+	require.NotEmpty(t, addr)
+
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get(fmt.Sprintf("http://%s/metrics", addr))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+
+	content := string(body)
+	assert.Contains(t, content, `tgbox_updates_dropped_total{reason="buffer_full"} 42`)
+	assert.Contains(t, content, `tgbox_resync_events_total{type="user"} 1`)
+	assert.Contains(t, content, "tgbox_ringbuffer_capacity_used")
+}
+
 func TestProfiler_WatchdogThreshold(t *testing.T) {
 	t.Parallel()
 
