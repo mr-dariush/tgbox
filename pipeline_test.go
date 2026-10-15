@@ -1581,11 +1581,6 @@ func TestPipeline_PolymorphicUpdates_CoverageBooster(t *testing.T) {
 	assert.Equal(t, int32(203), val.(int32))
 }
 
-// [INSERT-AFTER] Place directly AFTER `TestPipeline_PolymorphicUpdates_CoverageBooster`.
-// [ANCHOR] 	assert.Equal(t, int32(203), val.(int32))
-// [ANCHOR] }
-// [WHY] Validates fault injection pathways during sync: PERSISTENT_TIMESTAMP_INVALID purge, canceled context handling, and transient network error recovery.
-
 type mockFaultDiffInvoker struct {
 	mu           sync.Mutex
 	calls        int
@@ -1687,13 +1682,6 @@ func TestPipeline_FaultInjection_GetDifferenceErrors(t *testing.T) {
 		return !c.isFetchingDiff.Load()
 	}, 2*time.Second, 10*time.Millisecond)
 }
-
-// [INSERT-AFTER] Place directly AFTER `TestPipeline_FaultInjection_GetDifferenceErrors`.
-// [ANCHOR] 	assert.Eventually(t, func() bool {
-// [ANCHOR] 		return !c.isFetchingDiff.Load()
-// [ANCHOR] 	}, 2*time.Second, 10*time.Millisecond)
-// [ANCHOR] }
-// [WHY] Verifies recoverHistoryViaGetHistory restores user and basic group dialogs, parses MessagesDialogsSlice, and sets dialog recovery flags.
 
 type mockMultiPeerDialogInvoker struct {
 	mu           sync.Mutex
