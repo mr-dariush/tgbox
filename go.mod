@@ -5,7 +5,7 @@ go 1.27.2
 require (
 	github.com/gotd/contrib v0.25.0
 	github.com/gotd/neo v0.1.5
-	github.com/gotd/td v0.162.0
+	github.com/gotd/td v0.163.0
 	github.com/redis/go-redis/v9 v9.23.0
 	github.com/refraction-networking/utls v1.8.2
 	github.com/stretchr/testify v1.12.1
