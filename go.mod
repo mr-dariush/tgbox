@@ -3,9 +3,9 @@ module github.com/mr-dariush/tgbox
 go 1.27.2
 
 require (
-	github.com/gotd/contrib v0.25.0
+	github.com/gotd/contrib v0.26.0
 	github.com/gotd/neo v0.1.5
-	github.com/gotd/td v0.163.0
+	github.com/gotd/td v0.164.0
 	github.com/redis/go-redis/v9 v9.23.0
 	github.com/refraction-networking/utls v1.8.2
 	github.com/stretchr/testify v1.12.1
@@ -14,7 +14,7 @@ require (
 	go.opentelemetry.io/otel/trace v1.47.0
 	go.uber.org/atomic v1.12.0
 	golang.org/x/net v0.62.0
-	golang.org/x/sync v0.24.0
+	golang.org/x/sync v0.25.0
 	golang.org/x/time v0.16.0
 )
 
